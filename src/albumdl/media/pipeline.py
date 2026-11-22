@@ -30,7 +30,7 @@ class Options:
 
 
 def album_folder(album: mb.Album, out_root: str) -> str:
-    return os.path.join(out_root, safe(f"{album.artist} - {album.title}"))
+    return os.path.join(out_root, safe(album.artist), safe(album.title))
 
 
 def wait_online(cancel: threading.Event, timeout: float = 600) -> None:

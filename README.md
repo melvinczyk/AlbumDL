@@ -4,7 +4,7 @@ AlbumDL is a webserver that allows you to download official music from YouTube M
 
 It uses MusicBrainz public database to find metadata about songs and for grabbing the cover art.
 
-Albums are saved straight into one folder as `Artist - Album/## - Title.mp3` plus `cover.jpg` in there too.
+Albums are saved straight into one folder as `Artist/Album/## - Title.mp3` plus `cover.jpg` in there too.
 
 ## Run with Docker
 

@@ -48,44 +48,46 @@ def _key(name: str) -> str:
 
 
 class Library:
-    """What is already in the music folder. One cheap scan of folder names, cached for 30 seconds."""
+    """What is already in the music folder (Artist/Album/). Folder listings are cached for 30 seconds."""
 
     def __init__(self, out_root: str):
         self.out_root = out_root
-        self._cache = (0.0, {})
+        self._cache: Dict[str, tuple] = {}
 
     def refresh(self) -> None:
-        self._cache = (0.0, {})
+        self._cache.clear()
 
-    def _folders(self) -> Dict[str, str]:
-        if time.time() - self._cache[0] < 30:
-            return self._cache[1]
+    def _subfolders(self, path: str) -> Dict[str, str]:
+        hit = self._cache.get(path)
+        if hit and time.time() - hit[0] < 30:
+            return hit[1]
         names = {}
         try:
-            for e in os.scandir(self.out_root):
+            for e in os.scandir(path):
                 if e.is_dir() and not e.name.startswith("."):
                     names[_key(e.name)] = e.name
         except OSError:
             pass
-        self._cache = (time.time(), names)
+        self._cache[path] = (time.time(), names)
         return names
 
-    def owned(self, folder_name: str) -> Optional[dict]:
-        name = self._folders().get(_key(folder_name))
-        if not name:
+    def owned_album(self, artist: str, title: str) -> Optional[dict]:
+        artist_dir = self._subfolders(self.out_root).get(_key(pipeline.safe(artist)))
+        if not artist_dir:
+            return None
+        path = os.path.join(self.out_root, artist_dir)
+        album_dir = self._subfolders(path).get(_key(pipeline.safe(title)))
+        if not album_dir:
             return None
         tracks = size = 0
         try:
-            for f in os.scandir(os.path.join(self.out_root, name)):
+            for f in os.scandir(os.path.join(path, album_dir)):
                 if f.is_file() and f.name.lower().endswith(AUDIO):
                     tracks += 1
                     size += f.stat().st_size
         except OSError:
             return None
         return {"tracks": tracks, "size": size} if tracks else None
-
-    def owned_album(self, artist: str, title: str) -> Optional[dict]:
-        return self.owned(pipeline.safe(f"{artist} - {title}"))
 
 
 class Job:

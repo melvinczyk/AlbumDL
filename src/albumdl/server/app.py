@@ -160,7 +160,7 @@ def create_app(settings: Settings) -> FastAPI:
             "mbid": album.mbid, "group_id": album.group_id, "title": album.title, "artist": album.artist,
             "date": album.date, "original_date": album.original_date, "label": album.label, "genres": album.genres,
             "disc_total": album.disc_total, "total_seconds": sum(t.length_ms or 0 for t in album.tracks) // 1000,
-            "folder": folder, "owned": library.owned(os.path.basename(folder)),
+            "folder": folder, "owned": library.owned_album(album.artist, album.title),
             "tracks": [{"disc": t.disc, "number": t.number, "title": t.title,
                         "seconds": round(t.length_ms / 1000) if t.length_ms else None,
                         "artist": t.artist if t.artist != album.artist else ""} for t in album.tracks],
