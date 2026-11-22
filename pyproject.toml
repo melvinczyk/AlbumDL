@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "albumdl"
+version = "0.1.0"
+description = "Download whole albums from YouTube with MusicBrainz tags and cover art"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["fastapi", "uvicorn", "yt-dlp[default]", "ytmusicapi", "mutagen", "requests", "Pillow"]
+
+[project.scripts]
+albumdl = "albumdl.__main__:main"
+
+[tool.setuptools.package-data]
+albumdl = ["web/templates/*", "web/static/*/*"]

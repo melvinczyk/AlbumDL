@@ -1,0 +1,12 @@
+services:
+  albumdl:
+    build: .
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      - ${MUSIC_DIR:?set MUSIC_DIR in .env}:/music
+    environment:
+      ALBUMDL_FORMAT: mp3
+      ALBUMDL_JOBS: 4
