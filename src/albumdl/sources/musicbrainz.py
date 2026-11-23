@@ -133,6 +133,9 @@ class Album:
     asin: str = ""
     cover_url: str = ""
     edition: str = ""
+    partial: bool = False
+    folder: str = ""
+    disc_counts: dict = field(default_factory=dict)
     tracks: List[Track] = field(default_factory=list)
 
     @property
@@ -195,6 +198,24 @@ def _fold(s: str) -> str:
     return re.sub(r"[\W_]+", "", "".join(c for c in unicodedata.normalize("NFD", s.lower()) if not unicodedata.combining(c)))
 
 
+def _words(s: str) -> List[str]:
+    return re.findall(r"\w+", "".join(c for c in unicodedata.normalize("NFD", s.lower()) if not unicodedata.combining(c)))
+
+
+def search_text(text: str, limit: int = 25) -> List[dict]:
+    """Free text like "title fight kingston" or "kingston by title fight": keep releases whose artist and title together contain every word."""
+    year = re.search(r"\b(?:19|20)\d{2}\b", text)
+    words = [w for w in _words(re.sub(r"\b(?:19|20)\d{2}\b", " ", text)) if w not in {"by", "album", "ep", "single", "full"}]
+    if len(words) < 2:
+        return []
+    joined = " ".join(words)
+    rows = _group_rows(_get("release-group", query=f"releasegroup:({joined}) OR artist:({joined})", limit=limit))
+    want = set(words)
+    rows = [r for r in rows if want <= set(_words(f"{r['artist']} {r['title']}"))]
+    rows.sort(key=lambda r: (bool(year) and not r["date"].startswith(year.group()), TYPE_RANK.get(r["type"], 3), bool(r["secondary"]), -r["score"]))
+    return rows
+
+
 def search_artists(name: str, limit: int = 6) -> List[dict]:
     data = _get("artist", query=f'artist:"{_q(name)}"', limit=50)
     if not data.get("artists"):
@@ -205,7 +226,8 @@ def search_artists(name: str, limit: int = 6) -> List[dict]:
         out.append({"id": a["id"], "name": a["name"], "type": a.get("type") or "",
                     "country": a.get("country") or "", "disambiguation": a.get("disambiguation") or "",
                     "begin": (span.get("begin") or "")[:4], "end": (span.get("end") or "")[:4],
-                    "score": int(a.get("score", 0))})
+                    "score": int(a.get("score", 0)),
+                    "match": round(difflib.SequenceMatcher(None, _fold(name), _fold(a["name"])).ratio(), 2)})
     out.sort(key=lambda a: _fold(a["name"]) != _fold(name))
     return out[:limit]
 

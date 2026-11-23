@@ -55,6 +55,7 @@ class Library:
     def __init__(self, out_root: str):
         self.out_root = out_root
         self._cache: Dict[str, tuple] = {}
+        self._tags: Dict[tuple, List[str]] = {}
 
     def refresh(self) -> None:
         self._cache.clear()
@@ -124,12 +125,15 @@ class Library:
                 tracks = size = 0
                 newest = 0.0
                 cover = incomplete = False
+                first = ""
                 try:
                     for f in os.scandir(os.path.join(apath, album)):
                         low = f.name.lower()
                         if f.name.startswith(".") or not f.is_file():
                             continue
                         if low.endswith(AUDIO):
+                            if low.endswith(".mp3") and (not first or f.name < first):
+                                first = f.name
                             st = f.stat()
                             tracks, size, newest = tracks + 1, size + st.st_size, max(newest, st.st_mtime)
                         elif low == "cover.jpg":
@@ -146,8 +150,100 @@ class Library:
                         parts = f.read().split("\n\n")
                     missing = [l for l in (parts[1].split("\n") if len(parts) > 1 else []) if l.strip()]
                 out.append({"artist": artist, "title": album, "tracks": tracks, "size": size, "mtime": newest,
-                            "cover": cover, "incomplete": incomplete, "missing": missing})
+                            "cover": cover, "incomplete": incomplete, "missing": missing,
+                            "gaps": self._gaps(os.path.join(apath, album, first)) if first else []})
         return out
+
+    def _gaps(self, path: str) -> List[str]:
+        """What the first track's tags lack. An album you saved in the tag editor counts as reviewed."""
+        try:
+            key = (path, os.path.getmtime(path))
+        except OSError:
+            return []
+        if key not in self._tags:
+            gaps = []
+            try:
+                from mutagen.id3 import ID3
+                t = ID3(path)
+                if not any(f.desc == "ALBUMDL_REVIEWED" for f in t.getall("TXXX")):
+                    if not str(t.get("TCON") or "").strip():
+                        gaps.append("genre")
+                    if not re.fullmatch(r"\d{4}", str(t.get("TDRC") or "")[:4]):
+                        gaps.append("year")
+            except Exception:
+                pass
+            self._tags[key] = gaps
+        return self._tags[key]
+
+    def album_detail(self, artist: str, title: str) -> Optional[dict]:
+        from mutagen.id3 import ID3
+        ad = self._find(self.out_root, artist)
+        al = ad and self._find(os.path.join(self.out_root, ad), title)
+        if not al:
+            return None
+        folder = os.path.join(self.out_root, ad, al)
+        names = sorted(f.name for f in os.scandir(folder) if f.is_file() and f.name.lower().endswith(".mp3") and not f.name.startswith("."))
+        if not names:
+            return None
+        tracks = []
+        for n in names:
+            try:
+                tracks.append({"file": n, "title": str(ID3(os.path.join(folder, n)).get("TIT2") or n[:-4])})
+            except Exception:
+                tracks.append({"file": n, "title": n[:-4]})
+        try:
+            t = ID3(os.path.join(folder, names[0]))
+        except Exception:
+            t = {}
+        get = lambda k: str(t.get(k) or "") if t != {} else ""
+        return {"artist_dir": ad, "album_dir": al, "artist": get("TPE2") or get("TPE1") or ad, "album": get("TALB") or al,
+                "year": get("TDRC")[:4], "genre": get("TCON"), "label": get("TPUB"), "tracks": tracks}
+
+    def write_tags(self, artist: str, title: str, fields: dict, titles: dict, rename: bool) -> dict:
+        from mutagen.id3 import ID3, TALB, TCON, TDRC, TIT2, TPE1, TPE2, TPUB, TXXX
+        d = self.album_detail(artist, title)
+        if not d:
+            raise LookupError("that album is no longer in the folder")
+        folder = os.path.join(self.out_root, d["artist_dir"], d["album_dir"])
+        names = {}
+        for t in d["tracks"]:
+            path = os.path.join(folder, t["file"])
+            new = (titles.get(t["file"]) or "").strip() or t["title"]
+            names[t["file"]] = new
+            tags = ID3(path)
+            tags.setall("TIT2", [TIT2(encoding=3, text=new)])
+            if fields["artist"]:
+                if str(tags.get("TPE1") or "") in ("", d["artist"]):
+                    tags.setall("TPE1", [TPE1(encoding=3, text=fields["artist"])])
+                tags.setall("TPE2", [TPE2(encoding=3, text=fields["artist"])])
+            for key, frame, value in (("album", TALB, fields["album"]), ("year", TDRC, fields["year"]), ("genre", TCON, fields["genre"]), ("label", TPUB, fields["label"])):
+                frame_id = frame.__name__
+                if value:
+                    tags.setall(frame_id, [frame(encoding=3, text=value)])
+                elif key != "album":
+                    tags.delall(frame_id)
+            tags.delall("TXXX:ALBUMDL_REVIEWED")
+            tags.add(TXXX(encoding=3, desc="ALBUMDL_REVIEWED", text=["1"]))
+            tags.save(path, v1=2, v2_version=3)
+        new_artist, new_album = fields["artist"] or d["artist"], fields["album"] or d["album"]
+        if rename:
+            target = os.path.join(self.out_root, pipeline.safe(new_artist), pipeline.safe(new_album))
+            if os.path.abspath(target).lower() != os.path.abspath(folder).lower() and os.path.exists(target):
+                raise FileExistsError("a folder with that artist and album name already exists")
+            for old, new in names.items():
+                prefix = old.split(" - ", 1)[0] + " - " if " - " in old else ""
+                dest = os.path.join(folder, f"{prefix}{pipeline.safe(new)}.mp3")
+                if dest != os.path.join(folder, old):
+                    os.replace(os.path.join(folder, old), dest)
+            if os.path.abspath(target) != os.path.abspath(folder):
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                os.rename(folder, target)
+                try:
+                    os.rmdir(os.path.dirname(folder))
+                except OSError:
+                    pass
+        self.refresh()
+        return {"artist": new_artist, "album": new_album}
 
     def incomplete_albums(self, only: Optional[set] = None) -> List[dict]:
         from mutagen.id3 import ID3
@@ -155,13 +251,14 @@ class Library:
         for row in self.albums():
             if not row["incomplete"] or (only is not None and (row["artist"], row["title"]) not in only):
                 continue
-            row = dict(row, group_id="")
+            row = dict(row, group_id="", mbid="")
             songs = sorted(f.path for f in os.scandir(os.path.join(self.out_root, row["artist"], row["title"]))
                            if f.name.lower().endswith(".mp3") and not f.name.startswith("."))
             if songs:
                 try:
                     id3 = ID3(songs[0])
                     row["group_id"] = next((str(f.text[0]) for f in id3.getall("TXXX") if f.desc == "MusicBrainz Release Group Id" and f.text), "")
+                    row["mbid"] = next((str(f.text[0]) for f in id3.getall("TXXX") if f.desc == "MusicBrainz Album Id" and f.text), "")
                 except Exception:
                     pass
             out.append(row)
@@ -199,6 +296,7 @@ class Job:
              "elapsed": round(end - self.started, 1) if self.started else 0,
              "bytes": sum(t.get("out_bytes") or 0 for t in tr if t["state"] == "done"),
              "retries": sum(max(0, (t.get("attempts") or 1) - 1) for t in tr),
+             "gaps": [g for g, miss in (("genre", not self.album.genres), ("year", len(self.album.date or self.album.original_date or "") < 4)) if miss],
              "src_kbps": round(sum(k) / len(k)) if (k := [t["src_kbps"] for t in tr if t["state"] == "done" and t.get("src_kbps")]) else 0}
         if full:
             d["tracks"] = list(self.tracks.values())

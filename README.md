@@ -32,11 +32,14 @@ OUTPUT_DIR=./out .venv/bin/albumdl
 
 ## How to use
 
-- Search an artist to see their albums, or type `Artist - Album` to find one release. You can also paste a MusicBrainz link.
+- The search box takes an artist, an album, or a link. Words can go in any order (`Title Fight Kingston`, `Kingston by Title Fight`) and small typos are tolerated. A MusicBrainz link opens that release.
+- If MusicBrainz and YouTube Music have nothing, the search lists YouTube playlists and long videos, so you can import unofficial music (game soundtracks, fan uploads). You can also paste a YouTube link directly, or press **Search YouTube uploads** under any result list.
 - Artist pages show **Similar** artists. Tap one to open it. Artists you already have a folder for get a check mark, and artist photos come from Deezer. Add `LASTFM_KEY=<your key>` to `.env` to use Last.fm (a free API key from last.fm/api); without it the list comes from ListenBrainz.
 - If MusicBrainz has no match (new or small artists), the search falls back to YouTube Music, and a **Search YouTube Music** button sits under every MusicBrainz result list. Those albums get basic tags (artist, album, year, track numbers, cover) and no MusicBrainz IDs.
 - **Unofficial uploads** (game soundtracks, fan uploads): paste a YouTube playlist or video link into the search box. AlbumDL lists the videos, strips the album name and track numbers from the titles, and lets you edit the artist, album, year, genre and each title before downloading. A single video with chapters (a full album upload) is split into one track per chapter; the video is downloaded once. The cover is the video thumbnail, cropped square.
 - Select a single album and an **Edition** menu appears when it has other editions (deluxe, anniversary, bonus tracks). The standard edition is the default. A non-standard edition is saved as `Title (edition name)`, so it sits next to the standard one instead of replacing it.
+- Albums whose tags lack a genre or year are marked **Data incomplete** in the Library and in the Queue. Select one in the Library and press **Edit tags** (or **Edit tags** on its Queue row) to fill in the artist, album, year, genre, label and track titles. Saving rewrites the tags and can rename the folder and files to match. A saved album no longer shows the notice.
+- If a track can't be found, select the incomplete album in the Library and press **Link tracks** (or **Link tracks** on its Queue row). Paste the YouTube link for each missing song. Only that song is downloaded and tagged from the album's MusicBrainz data, and the rest of the album is left alone. **Retry** still searches again for everything.
 - Albums already in the folder are marked **In folder**.
 - Tap albums, EPs or singles to select them (or **Select all** for a discography), then press **Download**. Downloading an album that is already there replaces it.
 - Select albums marked **In folder** and press **Delete** (twice, to confirm) to remove their folders from disk. Navidrome keeps deleted albums as empty "missing" entries until you remove them in its Missing Files page, or set `ND_SCANNER_PURGEMISSING=full` on the Navidrome container.

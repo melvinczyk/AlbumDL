@@ -3,7 +3,9 @@ import os
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import quote_plus
 
 from yt_dlp import YoutubeDL
 
@@ -49,7 +51,17 @@ def version_words(title: str) -> set:
     return {w for w in VERSION_WORDS if re.search(rf"\b{re.escape(w)}\b", low)}
 
 
+def title_variants(title: str) -> List[str]:
+    """"Song / Hidden Song" is usually listed as just "Song" on streaming sites, so the first part is also an acceptable title."""
+    parts = [p.strip() for p in re.split(r"\s+/{1,2}\s+", title or "") if p.strip()]
+    return [title, parts[0]] if len(parts) > 1 else [title]
+
+
 def title_matches(candidate: str, wanted: str, album_title: str = "", loose: bool = False) -> bool:
+    return any(_title_matches(candidate, w, album_title, loose) for w in title_variants(wanted))
+
+
+def _title_matches(candidate: str, wanted: str, album_title: str = "", loose: bool = False) -> bool:
     tt, ct = core(wanted), core(candidate)
     if not tt or not ct or version_words(candidate) - version_words(album_title) - (SOFT if loose else set()) != version_words(wanted):
         return False
@@ -145,6 +157,31 @@ def import_playlist(url: str) -> dict:
             "thumb": f"https://i.ytimg.com/vi/{entries[0]['id']}/maxresdefault.jpg", "tracks": tracks}
 
 
+def search_uploads(query: str) -> List[dict]:
+    """Playlists and long videos on YouTube itself, for music that is not on YouTube Music."""
+    def playlists() -> List[dict]:
+        with ydl({"extract_flat": True, "skip_download": True, "playlistend": 10}) as y:
+            info = y.extract_info(f"https://www.youtube.com/results?search_query={quote_plus(query)}&sp=EgIQAw%3D%3D", download=False) or {}
+        return [{"kind": "playlist", "url": e["url"], "title": e.get("title") or "", "channel": e.get("channel") or e.get("uploader") or "",
+                 "thumb": (e.get("thumbnails") or [{}])[0].get("url", ""), "duration": None}
+                for e in info.get("entries", []) if e and e.get("url") and "list=" in e["url"]][:8]
+
+    def videos() -> List[dict]:
+        return [{"kind": "video", "url": f"https://www.youtube.com/watch?v={e['id']}", "title": e.get("title") or "", "channel": e.get("channel") or e.get("uploader") or "",
+                 "thumb": f"https://i.ytimg.com/vi/{e['id']}/mqdefault.jpg", "duration": e.get("duration")}
+                for e in search(f"{query} full album", 10) if e.get("id") and (e.get("duration") or 0) >= 600][:5]
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a, b = pool.submit(playlists), pool.submit(videos)
+        out = []
+        for f in (a, b):
+            try:
+                out += f.result()
+            except Exception:
+                pass
+    return out
+
+
 def ytm_search(query: str) -> List[dict]:
     from ytmusicapi import YTMusic
     out = []
@@ -186,7 +223,8 @@ def score(entry: dict, track: Track, album: Album, loose: bool = False) -> float
         s += 40
     if any(core(a) and core(a) in core(f"{channel} {title}") for a in track.artists):
         s += 15
-    tt, ct = core(track.title), core(title)
+    ct = core(title)
+    tt = max((core(v) for v in title_variants(track.title)), key=lambda v: (bool(v) and v in ct, difflib.SequenceMatcher(None, v, ct).ratio()))
     if tt:
         s += 30 if tt in ct else 30 * difflib.SequenceMatcher(None, tt, ct).ratio()
     low = title.lower()
@@ -268,7 +306,7 @@ def match_playlist(track: Track, entries: List[dict], index: int, album: Album) 
     for e in entries:
         if not title_matches(e.get("title") or "", track.title, album.title):
             continue
-        ratio = difflib.SequenceMatcher(None, core(track.title), core(e["title"])).ratio()
+        ratio = max(difflib.SequenceMatcher(None, core(v), core(e["title"])).ratio() for v in title_variants(track.title))
         dur = e.get("duration")
         gap = abs(dur - track.length_ms / 1000) if dur and track.length_ms else 0
         key = (ratio, e.get("_index") == index, -gap)
@@ -302,8 +340,10 @@ def find_song(track: Track, album: Album) -> Optional[dict]:
 
 def search_official(track: Track, album: Album) -> Optional[Tuple[dict, str]]:
     artist = track.artists[0]
-    queries = [f"{artist} {track.title} {album.title}", f"{artist} {track.title} official audio",
-               f"{artist} - Topic {track.title}", f"{artist} - {track.title}"]
+    variants = title_variants(track.title)
+    name = variants[1] if len(variants) > 1 else track.title
+    queries = [f"{artist} {name} {album.title}", f"{artist} {name} official audio",
+               f"{artist} - Topic {name}", f"{artist} - {name}"]
     seen, pool = set(), []
     found = {"official": None, "unofficial": None, "unchecked": 0}
 
@@ -315,8 +355,9 @@ def search_official(track: Track, album: Album) -> Optional[Tuple[dict, str]]:
                 continue
             title = e.get("title") or ""
             if title_matches(title, track.title, album.title, loose) or (
-                    (e.get("channel") or e.get("uploader")) and re.search(rf"\b{re.escape(core(track.title))}\b", core(title))
-                    and version_words(title) - version_words(album.title) - (SOFT if loose else set()) == version_words(track.title)):
+                    (e.get("channel") or e.get("uploader"))
+                    and any(core(v) and re.search(rf"\b{re.escape(core(v))}\b", core(title))
+                            and version_words(title) - version_words(album.title) - (SOFT if loose else set()) == version_words(v) for v in title_variants(track.title))):
                 ranked.append((sc, e))
         for sc, e in sorted(ranked, key=lambda x: -x[0])[:4]:
             info = video_info(e)

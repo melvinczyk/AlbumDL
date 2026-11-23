@@ -79,16 +79,21 @@ async function search(q, hint = '') {
   const split = q.split(/\s+[-–—]\s+/);
   if (split.length > 1) {
     const d = await api('/api/search?artist=' + encodeURIComponent(split[0]) + '&album=' + encodeURIComponent(split.slice(1).join(' - ')));
-    return d.results.length ? rows(d, 'Results') : searchYtm(split.join(' '));
+    if (d.results.length) return rows(d, 'Results');
+    const t = await api('/api/search?q=' + encodeURIComponent(split.join(' ')));
+    return t.results.length ? rows(t, 'Results') : searchYtm(split.join(' '));
   }
   const { artists } = await api('/api/artists?q=' + encodeURIComponent(q));
   const exact = artists.filter(a => norm(a.name) === norm(q));
   if (exact.length > 1) return pickArtist(exact, artists.filter(a => !exact.includes(a)), undefined, undefined, hint);
   if (exact.length === 1) return showArtist(exact[0], artists);
-  if (artists.length && artists[0].score >= 85) return showArtist(artists[0], artists);
+  const t = await api('/api/search?q=' + encodeURIComponent(q));
+  if (t.results.length) return rows(t, 'Results');
+  const close = artists.filter(a => a.match >= 0.75).sort((a, b) => b.match - a.match);
+  if (close.length && (close[0].score >= 85 || close[0].match >= 0.8)) return showArtist(close[0], artists);
   const d = await api('/api/search?album=' + encodeURIComponent(q));
   if (d.results.length) return rows(d, 'Results');
-  if (artists.length) return showArtist(artists[0], artists);
+  if (close.length) return showArtist(close[0], artists);
   searchYtm(q);
 }
 const norm = s => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
@@ -130,8 +135,21 @@ async function searchYtm(q) {
   fill($('#results'), skeleton());
   try {
     const d = await api('/api/ytm/search?q=' + encodeURIComponent(q));
-    if (!d.results.length) return fill($('#results'), el('div', { class: 'msg', text: 'Nothing found on MusicBrainz or YouTube Music. Check the spelling.' }));
+    if (!d.results.length) return searchUploads(q);
     rows(d, 'YouTube Music');
+  } catch (e) { fill($('#results'), el('div', { class: 'msg err', text: e.message })); }
+}
+async function searchUploads(q) {
+  fill($('#results'), skeleton());
+  try {
+    const { results: list } = await api('/api/yt/search?q=' + encodeURIComponent(q));
+    if (!list.length) return fill($('#results'), el('div', { class: 'msg', text: 'Nothing found on MusicBrainz, YouTube Music or YouTube. Check the spelling, or paste a link.' }));
+    results = []; selected.clear(); drawActions();
+    fill($('#results'), el('div', { class: 'bar' }, el('h2', { text: 'YouTube uploads' }), el('span', { class: 'sub', text: 'Pick one to import it' })),
+      list.map(u => el('button', { class: 'lrow upl', type: 'button', onclick: () => { fill($('#results'), skeleton()); importYt(u.url).catch(e => fill($('#results'), el('div', { class: 'msg err', text: e.message }))); } },
+        cover(u.thumb), el('span', { class: 'jtext' }, el('b', { text: u.title, title: u.title }),
+          el('small', { text: [u.kind === 'playlist' ? 'Playlist' : 'Video' + (u.duration ? ' · ' + Math.round(u.duration / 60) + ' min' : ''), u.channel].filter(Boolean).join(' · ') })))),
+      el('p', { class: 'foot', text: 'Unofficial uploads: you set the artist, album and track names before downloading.' }));
   } catch (e) { fill($('#results'), el('div', { class: 'msg err', text: e.message })); }
 }
 async function direct(kind, id) {
@@ -188,7 +206,9 @@ function renderResults() {
           el('small', { text: [artistCtx ? '' : r.artist, r.date.slice(0, 4), typeOf(r)].filter(Boolean).join(' · ') })));
       return card;
     })),
-    el('p', { class: 'foot' }, results[0] && results[0].ytm ? 'These come from YouTube Music, not MusicBrainz. Genre, label and date are filled in from Deezer when it has the album.' : [el('span', { text: 'Not here? ' }), el('button', { class: 'btn sm ghost', type: 'button', text: 'Search YouTube Music', onclick: () => searchYtm(lastQ) })]));
+    el('p', { class: 'foot' }, [results[0] && results[0].ytm ? el('span', { text: 'These come from YouTube Music, not MusicBrainz. Genre, label and date are filled in from Deezer when it has the album. ' }) : el('span', { text: 'Not here? ' }),
+      results[0] && results[0].ytm ? null : el('button', { class: 'btn sm ghost', type: 'button', text: 'Search YouTube Music', onclick: () => searchYtm(lastQ) }), ' ',
+      el('button', { class: 'btn sm ghost', type: 'button', text: 'Search YouTube uploads', onclick: () => searchUploads(lastQ) })]));
   fresh = false; drawActions();
 }
 const libSel = new Map(), lkey = a => a.artist + '\u0000' + a.title;
@@ -212,6 +232,8 @@ function drawActions() {
   const lib_ = view === 'library', n = lib_ ? libSel.size : selected.size;
   $('#actions').hidden = !n || (view !== 'search' && !lib_);
   drawEditions();
+  $('#editBtn').hidden = !(lib_ && n === 1);
+  $('#linkBtn').hidden = !(lib_ && n === 1 && [...libSel.values()][0].missing.length);
   $('#dlBtn').hidden = lib_; $('#retryBtn').hidden = !(lib_ && [...libSel.values()].some(a => a.incomplete));
   if (lib_) {
     $('#actionText').textContent = `${n === 1 ? '1 album' : n + ' albums'} · ${bytes([...libSel.values()].reduce((t, a) => t + a.size, 0))}`;
@@ -270,9 +292,9 @@ async function loadLibrary() {
 }
 function renderLibrary() {
   const q = $('#libFilter').value.trim().toLowerCase(), inc = lib.filter(a => a.incomplete).length, bare = lib.filter(a => !a.cover).length;
-  const modes = [['All', lib.length], ['Recent', 0], ['Incomplete', inc], ['No cover', bare]];
+  const bareData = lib.filter(a => a.gaps.length).length, modes = [['All', lib.length], ['Recent', 0], ['Incomplete', inc], ['Data incomplete', bareData], ['No cover', bare]];
   fill($('#libChips'), modes.map(([m, c]) => el('button', { class: 'chip' + (m === libMode ? ' on' : ''), type: 'button', text: c ? `${m} · ${c}` : m, onclick: () => { libMode = m; renderLibrary(); } })));
-  let rows = lib.filter(a => (!q || (a.artist + ' ' + a.title).toLowerCase().includes(q)) && ({ All: 1, Recent: 1, Incomplete: a.incomplete, 'No cover': !a.cover }[libMode]));
+  let rows = lib.filter(a => (!q || (a.artist + ' ' + a.title).toLowerCase().includes(q)) && ({ All: 1, Recent: 1, Incomplete: a.incomplete, 'Data incomplete': a.gaps.length, 'No cover': !a.cover }[libMode]));
   if (libMode === 'Recent') rows = rows.slice().sort((a, b) => b.mtime - a.mtime).slice(0, 40);
   $('#libSum').textContent = lib.length ? `${rows.length} albums · ${rows.reduce((t, a) => t + a.tracks, 0)} tracks · ${bytes(rows.reduce((t, a) => t + a.size, 0))}` : '';
   const row = a => {
@@ -281,7 +303,9 @@ function renderLibrary() {
       a.cover ? cover('/api/library/art?' + new URLSearchParams({ artist: a.artist, album: a.title })) : el('span', { class: 'cover' }),
       el('span', { class: 'jtext' }, el('b', { text: a.title, title: a.title }),
         el('small', { text: [libMode === 'All' ? '' : a.artist, a.tracks + (a.tracks === 1 ? ' track' : ' tracks'), bytes(a.size), a.mtime ? ago(a.mtime) : ''].filter(Boolean).join(' · ') }),
-        a.incomplete ? el('span', { class: 'st part', text: a.missing.length ? `Missing ${a.missing.length}: ${a.missing.join(', ')}` : 'Incomplete' }) : !a.cover ? el('span', { class: 'st wait', text: 'No cover' }) : null),
+        a.incomplete ? el('span', { class: 'st part', text: a.missing.length ? `Missing ${a.missing.length}: ${a.missing.join(', ')}` : 'Incomplete' }) : null,
+        a.gaps.length ? el('span', { class: 'st part', text: 'Data incomplete: no ' + a.gaps.join(', no ') }) : null,
+        !a.cover ? el('span', { class: 'st wait', text: 'No cover' }) : null),
       el('span', { class: 'tick' }, pic('check', 'c')));
     return r;
   };
@@ -292,6 +316,54 @@ function renderLibrary() {
   fill($('#libList'), out);
 }
 $('#libFilter').addEventListener('input', renderLibrary);
+$('#linkBtn').addEventListener('click', () => { const a = [...libSel.values()][0]; if (a) openLinker(a); });
+function openLinker(a) {
+  const host = $('#libEdit');
+  const rows = a.missing.map(name => {
+    const url = el('input', { type: 'text', placeholder: 'Paste the YouTube link for this song', 'aria-label': 'YouTube link for ' + name });
+    const go = el('button', { class: 'btn sm go', type: 'button', text: 'Download', onclick: async () => {
+      go.disabled = true;
+      try {
+        await api('/api/library/link', { artist: a.artist, album: a.title, file: name, url: url.value });
+        go.textContent = 'Queued'; url.disabled = true; toast('Queued ' + name, 'ok', { label: 'Queue', fn: () => show('queue') }); tick();
+      } catch (e) { toast(e.message, 'error'); go.disabled = false; }
+    } });
+    return el('div', { class: 'linkrow' }, el('b', { text: name }), el('div', { class: 'row', style: 'display:flex;gap:8px' }, url, go));
+  });
+  fill(host, el('div', { class: 'edit' }, el('div', { class: 'bar' }, el('h2', { text: 'Link missing tracks' }), el('span', { class: 'sub', text: `${a.artist} - ${a.title}` })),
+    el('p', { class: 'sub', text: 'Paste a link to the song on YouTube. Only that track is downloaded and tagged, and the rest of the album is left alone. Or use Retry to search again.' }),
+    rows, el('div', { style: 'margin-top:12px' }, el('button', { class: 'btn ghost', type: 'button', text: 'Close', onclick: () => { host.hidden = true; } }))));
+  host.hidden = false; host.scrollIntoView({ block: 'start', behavior: 'smooth' });
+}
+async function openLinkerFor(job) {
+  await loadLibrary();
+  const a = lib.find(x => norm(x.artist) === norm(job.artist) && norm(x.title) === norm(job.title)) || lib.find(x => norm(x.title) === norm(job.title) && x.incomplete);
+  if (!a || !a.missing.length) return toast('That album is no longer listed as incomplete', 'error');
+  openLinker(a);
+}
+$('#editBtn').addEventListener('click', () => { const a = [...libSel.values()][0]; if (a) openEditor(a.artist, a.title); });
+async function openEditor(artist, title) {
+  let d;
+  try { d = await api('/api/library/album?' + new URLSearchParams({ artist, album: title })); } catch (e) { return toast(e.message, 'error'); }
+  const f = { artist: d.artist, album: d.album, year: d.year, genre: d.genre, label: d.label }, titles = {}, host = $('#libEdit');
+  d.tracks.forEach(t => { titles[t.file] = t.title; });
+  let rename = true;
+  const field = (label, key, hint) => { const i = el('input', { type: 'text', value: f[key], 'aria-label': label, placeholder: hint, oninput: () => { f[key] = i.value; } }); return el('label', { class: 'field' }, el('small', { text: label }), i); };
+  const save = el('button', { class: 'btn go', type: 'button', text: 'Save tags', onclick: async () => {
+    save.disabled = true;
+    try {
+      await api('/api/library/tags', { artist: d.artist_dir, album: d.album_dir, fields: f, tracks: d.tracks.map(t => ({ file: t.file, title: titles[t.file] })), rename });
+      toast('Tags saved', 'ok'); host.hidden = true; libSel.clear(); drawActions(); await loadLibrary();
+    } catch (e) { toast(e.message, 'error'); save.disabled = false; }
+  } });
+  fill(host, el('div', { class: 'edit' },
+    el('div', { class: 'bar' }, el('h2', { text: 'Edit tags' }), el('span', { class: 'sub', text: d.tracks.length + (d.tracks.length === 1 ? ' track' : ' tracks') })),
+    el('div', { class: 'imp' }, field('Artist', 'artist', ''), field('Album', 'album', ''), field('Year', 'year', '2012'), field('Genre', 'genre', 'optional'), field('Label', 'label', 'optional')),
+    el('div', { class: 'tlist' }, d.tracks.map((t, i) => { const inp = el('input', { type: 'text', value: t.title, 'aria-label': 'Track ' + (i + 1) + ' title', oninput: () => { titles[t.file] = inp.value; } }); return el('div', { class: 'erow' }, el('span', { class: 'sz', text: String(i + 1).padStart(2, '0') }), inp); })),
+    el('label', { class: 'check' }, el('input', { type: 'checkbox', checked: true, onchange: ev => { rename = ev.target.checked; } }), ' Rename the folder and files to match'),
+    el('div', { class: 'row', style: 'display:flex;gap:8px;margin-top:12px' }, save, el('button', { class: 'btn ghost', type: 'button', text: 'Cancel', onclick: () => { host.hidden = true; } }))));
+  host.hidden = false; host.scrollIntoView({ block: 'start', behavior: 'smooth' });
+}
 const nodes = new Map(), openSet = new Map();
 let busy = false, order = '';
 const isOpen = j => openSet.has(j.id) ? openSet.get(j.id) : j.status === 'running';
@@ -301,7 +373,7 @@ function statusText(j) {
   switch (j.status) {
     case 'running': return `Downloading · ${j.finished}/${j.total}` + (eta != null ? ` · ${dur(eta)} left` : '');
     case 'queued': return 'Waiting';
-    case 'done': return `Done · ${j.total} tracks · ${bytes(j.bytes)}` + (j.src_kbps ? ` · source ~${j.src_kbps}k` : '');
+    case 'done': return `Done · ${j.total} tracks · ${bytes(j.bytes)}` + (j.src_kbps ? ` · source ~${j.src_kbps}k` : '') + (j.gaps && j.gaps.length ? ' · data incomplete' : '');
     case 'incomplete': return `${j.failed} of ${j.total} missing`;
     case 'cancelled': return 'Cancelled';
     default: return 'Failed';
@@ -311,11 +383,13 @@ function jobNode(j) {
   const n = { j };
   n.name = el('b'); n.by = el('small'); n.st = el('span', { class: 'st' });
   n.act = el('button', { class: 'btn sm', type: 'button' });
+  n.link = el('button', { class: 'btn sm hot', type: 'button', text: 'Link tracks', onclick: () => { show('library'); openLinkerFor(n.j); } });
+  n.edit = el('button', { class: 'btn sm ghost', type: 'button', text: 'Edit tags', onclick: () => { show('library'); openEditor(n.j.artist, n.j.title); } });
   n.meterFill = el('i'); n.tracks = el('div', { class: 'tracks' }); n.err = el('div', { class: 'jerr' });
   n.root = el('article', { class: 'job' },
     el('div', { class: 'jmain' },
       el('button', { class: 'jtog', type: 'button', onclick: () => toggle(n) }, cover(coverUrl(j.mbid, j.group_id, j.artist, j.title, 150)), el('span', { class: 'jtext' }, n.name, n.by, n.st)),
-      el('div', { class: 'jside' }, n.act, el('button', { class: 'jtog chevbtn', type: 'button', 'aria-label': 'Show tracks', onclick: () => toggle(n) }, el('i', { class: 'chev' })))),
+      el('div', { class: 'jside' }, n.link, n.edit, n.act, el('button', { class: 'jtog chevbtn', type: 'button', 'aria-label': 'Show tracks', onclick: () => toggle(n) }, el('i', { class: 'chev' })))),
     el('div', { class: 'meter' }, n.meterFill), n.err, el('div', { class: 'twrap' }, el('div', { class: 'tin' }, n.tracks)));
   return n;
 }
@@ -329,6 +403,8 @@ function paint(n) {
   n.name.textContent = j.title; n.name.title = j.title; n.by.textContent = [j.artist, j.year].filter(Boolean).join(' · ');
   n.st.className = 'st ' + k; n.st.textContent = statusText(j);
   n.meterFill.style.setProperty('--v', (j.total ? Math.round(100 * j.finished / j.total) : 0) + '%');
+  n.link.hidden = j.status !== 'incomplete';
+  n.edit.hidden = !(j.gaps && j.gaps.length && ['done', 'incomplete'].includes(j.status));
   n.act.hidden = j.status === 'done';
   n.act.textContent = active ? 'Cancel' : 'Retry'; n.act.className = 'btn sm ' + (active ? 'ghost' : 'hot');
   n.act.onclick = async () => {

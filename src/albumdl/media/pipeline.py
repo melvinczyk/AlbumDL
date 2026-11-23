@@ -31,7 +31,28 @@ class Options:
 
 
 def album_folder(album: mb.Album, out_root: str) -> str:
-    return os.path.join(out_root, safe(album.artist), safe(album.title))
+    return album.folder or os.path.join(out_root, safe(album.artist), safe(album.title))
+
+
+def read_marker(folder: str) -> list:
+    try:
+        with open(os.path.join(folder, INCOMPLETE), encoding="utf-8", errors="replace") as f:
+            parts = f.read().split("\n\n")
+    except OSError:
+        return []
+    return [l for l in (parts[1].split("\n") if len(parts) > 1 else []) if l.strip()]
+
+
+def write_marker(folder: str, names: list) -> None:
+    marker = os.path.join(folder, INCOMPLETE)
+    if not names:
+        if os.path.exists(marker):
+            os.remove(marker)
+        return
+    with open(marker, "w", encoding="utf-8") as f:
+        f.write("This album is incomplete. These tracks could not be downloaded:\n\n")
+        f.writelines(n + "\n" for n in names)
+        f.write("\nDownload the album again to fill them in.\n")
 
 
 def wait_online(cancel: threading.Event, timeout: float = 600) -> None:
@@ -99,7 +120,7 @@ def run(album: mb.Album, opts: Options, log: Callable[[str], None] = print,
     def get_cover() -> bytes:
         path = os.path.join(folder, "cover.jpg")
         try:
-            data, source = tagging.fetch_cover(album)
+            data, source = (None, "") if album.partial and os.path.exists(path) else tagging.fetch_cover(album)
             if data:
                 with open(path + ".part", "wb") as f:
                     f.write(data)
@@ -211,14 +232,12 @@ def run(album: mb.Album, opts: Options, log: Callable[[str], None] = print,
 
     src_tmp.cleanup()
     missing = [(i, t) for i, t in enumerate(album.tracks, 1) if outcome.get(i) != "ok"]
-    marker = os.path.join(folder, INCOMPLETE)
-    if missing:
-        with open(marker, "w", encoding="utf-8") as f:
-            f.write("This album is incomplete. These tracks could not be downloaded:\n\n")
-            f.writelines(os.path.basename(target(t))[:-4] + "\n" for _, t in missing)
-            f.write("\nDownload the album again to fill them in.\n")
-    elif os.path.exists(marker):
-        os.remove(marker)
+    names = [os.path.basename(target(t))[:-4] for _, t in missing]
+    if album.partial:
+        fixed = {os.path.basename(target(t))[:-4] for i, t in enumerate(album.tracks, 1) if outcome.get(i) == "ok"}
+        write_marker(folder, [n for n in read_marker(folder) if n not in fixed] + [n for n in names if n not in read_marker(folder)])
+    else:
+        write_marker(folder, names)
     done = total - len(missing)
     log(f"\nDone: {done}/{total} tracks, {len(missing)} failed")
     return done, len(missing)

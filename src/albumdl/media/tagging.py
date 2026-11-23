@@ -24,7 +24,7 @@ def _fields(album: Album, t: Track) -> Dict[str, object]:
     return {
         "title": t.title, "artist": t.artist, "artists": t.artists,
         "albumartist": album.artist, "album": album.title,
-        "track": t.number, "tracktotal": sum(1 for x in album.tracks if x.disc == t.disc),
+        "track": t.number, "tracktotal": album.disc_counts.get(t.disc) or sum(1 for x in album.tracks if x.disc == t.disc),
         "disc": t.disc, "disctotal": album.disc_total,
         "date": album.date or album.year, "originaldate": album.original_date,
         "genres": album.genres,

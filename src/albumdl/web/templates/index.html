@@ -32,12 +32,16 @@
   <main class="view active" id="v-search">
     <form class="find" id="searchForm" autocomplete="off">
       <span class="pi search c"></span>
-      <input type="text" id="q" placeholder="Artist, or Artist - Album" enterkeyhint="search" aria-label="Search">
+      <input type="text" id="q" placeholder="Artist, Artist - Album, or a link" enterkeyhint="search" aria-label="Search">
       <button class="btn go" id="searchBtn" type="submit">Search</button>
     </form>
     <div id="artistBar"></div>
     <div id="similar"></div>
-    <div id="results"></div>
+    <div id="results"><div class="howto">
+      <div><b>Artist</b><span>Title Fight</span></div>
+      <div><b>Album</b><span>Title Fight - Kingston, or just Title Fight Kingston</span></div>
+      <div><b>Link</b><span>A MusicBrainz or YouTube link. A YouTube playlist or video imports unofficial music, like game soundtracks or full-album uploads.</span></div>
+    </div></div>
   </main>
 
   <main class="view" id="v-library">
@@ -45,6 +49,7 @@
       <input type="text" id="libFilter" placeholder="Filter albums" aria-label="Filter albums">
       <button class="btn sm ghost" id="coversBtn" type="button">Find missing covers</button>
     </div>
+    <div id="libEdit" hidden></div>
     <div class="alts" id="libChips"></div>
     <p class="sub" id="libSum"></p>
     <div id="libList"></div>
@@ -73,6 +78,8 @@
   <span id="actionText"></span>
   <button class="btn ghost" id="clearSel" type="button">Clear</button>
   <button class="btn hot" id="retryBtn" type="button" hidden>Retry</button>
+  <button class="btn hot" id="linkBtn" type="button" hidden>Link tracks</button>
+  <button class="btn" id="editBtn" type="button" hidden>Edit tags</button>
   <button class="btn ghost danger" id="delBtn" type="button" hidden>Delete</button>
   <button class="btn go" id="dlBtn" type="button"><span class="pi download k"></span><span id="dlLabel">Download</span></button>
 </div>

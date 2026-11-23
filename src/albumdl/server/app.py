@@ -124,7 +124,12 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/api/search")
     @guarded
-    def search(artist: str = "", album: str = ""):
+    def search(artist: str = "", album: str = "", q: str = ""):
+        if q.strip():
+            rows = mb.search_text(q.strip()[:200])
+            for r in rows:
+                r["owned"] = library.owned_album(r["artist"], r["title"])
+            return {"results": rows}
         artist, album = artist.strip(), album.strip()
         for text in (album, artist):
             m = re.search(rf"musicbrainz\.org/(release-group|release)/({MBID})", text, re.I)
@@ -141,10 +146,19 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/api/ytm/search")
     def ytm_search(q: str = ""):
         rows = youtube.ytm_search(q.strip()[:200]) if q.strip() else []
+        want = {w for w in mb._words(q) if w not in {"by", "album", "ep", "single", "full"}}
+        if want:
+            def coverage(r):
+                return len(want & set(mb._words(f"{r['artist']} {r['title']}"))) / len(want)
+            rows = sorted((r for r in rows if coverage(r) >= 0.6), key=lambda r: -coverage(r))
         for r in rows:
             r["owned"] = library.owned_album(r["artist"], r["title"])
         events.emit("info", "search", f"youtube music search {q!r}: {len(rows)} albums")
         return {"results": rows}
+
+    @app.get("/api/yt/search")
+    def yt_search(q: str = ""):
+        return {"results": youtube.search_uploads(q.strip()[:200]) if q.strip() else []}
 
     @app.get("/api/yt/playlist")
     def yt_playlist(url: str = ""):
@@ -287,6 +301,64 @@ def create_app(settings: Settings) -> FastAPI:
             with open(path, "rb") as f:
                 thumbs[key] = tagging.to_jpeg(f.read(), max_side=200)
         return Response(thumbs[key], media_type="image/jpeg", headers={"Cache-Control": "public, max-age=3600"})
+
+    @app.post("/api/library/link")
+    @guarded
+    def library_link(body: dict = Body(...)):
+        artist, title, file = (str(body.get(k, "")).strip()[:200] for k in ("artist", "album", "file"))
+        video = re.search(r"(?:[?&]v=|youtu\.be/|/shorts/|/embed/)([\w-]{11})", str(body.get("url", "")))
+        if not video:
+            raise HTTPException(400, "that is not a YouTube video link")
+        row = next(iter(library.incomplete_albums({(artist, title)})), None)
+        m = re.match(r"(?:(\d+)-)?(\d+) - ", file)
+        if not row or not m:
+            raise HTTPException(404, "that album or track is no longer listed as incomplete")
+        if row["mbid"]:
+            album = mb.get_release(row["mbid"])
+        else:
+            gid = row["group_id"] or (next(iter(mb.search_albums(row["artist"], row["title"], limit=5)), {}).get("id", ""))
+            editions = mb.group_editions(gid) if gid else []
+            if not editions:
+                raise HTTPException(404, "MusicBrainz has no release for this album, so the track cannot be matched")
+            album = mb.get_release(editions[0]["id"])
+        disc, number = (int(m.group(1)) if m.group(1) else None), int(m.group(2))
+        track = next((t for t in album.tracks if t.number == number and (disc is None or t.disc == disc)), None)
+        if not track:
+            raise HTTPException(404, "that track number is not in the MusicBrainz release")
+        counts = {}
+        for t in album.tracks:
+            counts[t.disc] = counts.get(t.disc, 0) + 1
+        album.disc_counts, album.partial = counts, True
+        album.folder = os.path.join(settings.out_root, row["artist"], row["title"])
+        track.source = video.group(1)
+        album.tracks = [track]
+        jobs.submit(album)
+        return {"queued": 1}
+
+    @app.get("/api/library/album")
+    def library_album(artist: str = "", album: str = ""):
+        d = library.album_detail(artist[:200], album[:200])
+        if not d:
+            raise HTTPException(404, "album not found")
+        return d
+
+    @app.post("/api/library/tags")
+    def library_tags(body: dict = Body(...)):
+        clean = lambda v: str(v or "").strip()[:200]
+        f = body.get("fields") or {}
+        fields = {k: clean(f.get(k)) for k in ("artist", "album", "year", "genre", "label")}
+        if fields["year"] and not re.fullmatch(r"\d{4}(-\d{2}-\d{2})?", fields["year"]):
+            raise HTTPException(400, "the year should look like 2012")
+        titles = {str(t.get("file")): clean(t.get("title")) for t in body.get("tracks", []) if isinstance(t, dict) and os.path.basename(str(t.get("file"))) == str(t.get("file"))}
+        artist, album = clean(body.get("artist")), clean(body.get("album"))
+        if (pipeline.safe(artist), pipeline.safe(album)) in {(pipeline.safe(j.album.artist), pipeline.safe(j.album.title)) for j in jobs.listing() if j.status in ("queued", "running")}:
+            raise HTTPException(409, "that album is still downloading")
+        try:
+            return library.write_tags(artist, album, fields, titles, bool(body.get("rename")))
+        except LookupError as exc:
+            raise HTTPException(404, str(exc))
+        except FileExistsError as exc:
+            raise HTTPException(409, str(exc))
 
     @app.post("/api/library/retry-incomplete")
     @guarded
