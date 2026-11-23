@@ -44,3 +44,7 @@ Higher sources win; lower ones only fill what is empty.
 - **Tags:** MusicBrainz, then Deezer, iTunes, Last.fm
 - **Covers:** Cover Art Archive, then iTunes and Deezer, then YouTube Music
 - **Audio:** your pasted link, the official album playlist, an official upload, then the best unofficial one
+
+## Credits
+
+The background art is pixel art based on [this reference image](https://i.pinimg.com/736x/d3/01/ea/d301ea916d3827ca2924860983da4cdf.jpg).
