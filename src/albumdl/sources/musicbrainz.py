@@ -203,6 +203,13 @@ def search_artists(name: str, limit: int = 6) -> List[dict]:
     return out
 
 
+def artist_info(artist_id: str) -> dict:
+    a = _get(f"artist/{artist_id}")
+    span = a.get("life-span") or {}
+    return {"id": a["id"], "name": a["name"], "type": a.get("type") or "", "country": a.get("country") or "",
+            "disambiguation": a.get("disambiguation") or "", "begin": (span.get("begin") or "")[:4], "end": (span.get("end") or "")[:4]}
+
+
 def artist_albums(artist_id: str) -> List[dict]:
     data = _get("release-group", artist=artist_id, inc="artist-credits", limit=100)
     rows = _group_rows(data)

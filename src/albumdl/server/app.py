@@ -192,7 +192,12 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/api/artists")
     @guarded
     def artists(q: str = ""):
-        return {"artists": mb.search_artists(q.strip()) if q.strip() else []}
+        return {"artists": mb.search_artists(q.strip(), 10) if q.strip() else []}
+
+    @app.get("/api/artist-info/{aid}")
+    @guarded
+    def artist_info(aid: MbId):
+        return mb.artist_info(aid)
 
     @app.get("/api/artist/{aid}")
     @guarded

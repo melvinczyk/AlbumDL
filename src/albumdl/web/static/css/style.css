@@ -249,3 +249,4 @@ nav button { transition: background .2s, color .2s; }
 .trow input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--c1); }
 .trow .sz { padding: 0; text-align: right; }
 @media (max-width: 720px) { .imp { grid-template-columns: 1fr; } }
+#artistBar .sub { margin: 10px 4px 6px; }

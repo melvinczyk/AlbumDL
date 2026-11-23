@@ -82,11 +82,21 @@ async function search(q) {
     return d.results.length ? rows(d, 'Results') : searchYtm(split.join(' '));
   }
   const { artists } = await api('/api/artists?q=' + encodeURIComponent(q));
+  const exact = artists.filter(a => norm(a.name) === norm(q));
+  if (exact.length > 1) return pickArtist(exact, q);
   if (artists.length && artists[0].score >= 85) return showArtist(artists[0], artists);
   const d = await api('/api/search?album=' + encodeURIComponent(q));
   if (d.results.length) return rows(d, 'Results');
   if (artists.length) return showArtist(artists[0], artists);
   searchYtm(q);
+}
+const norm = s => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+const who = a => [a.type, a.country, [a.begin, a.end].filter(Boolean).join('–'), a.disambiguation].filter(Boolean).join(' · ');
+function pickArtist(list, q) {
+  fill($('#artistBar'));
+  fill($('#results'), el('div', { class: 'bar' }, el('h2', { text: `Which ${list[0].name}?` }), el('span', { class: 'sub', text: `${list.length} artists share this name` })),
+    list.map(a => el('button', { class: 'lrow', type: 'button', onclick: () => showArtist(a, list) },
+      el('span', { class: 'jtext' }, el('b', { text: a.name }), el('small', { text: who(a) || 'No details on MusicBrainz' })))));
 }
 async function importYt(url) {
   const d = await api('/api/yt/playlist?url=' + encodeURIComponent(url));
@@ -137,16 +147,15 @@ async function openSimilar(x) {
   $('#q').value = x.name; selected.clear(); drawActions(); fill($('#artistBar')); fill($('#results'), skeleton());
   try {
     if (x.id) return await showArtist({ id: x.id, name: x.name }, []);
-    const { artists } = await api('/api/artists?q=' + encodeURIComponent(x.name));
-    if (!artists.length) throw new Error('No artist found for ' + x.name);
-    await showArtist(artists[0], artists);
+    await search(x.name);
   } catch (e) { fill($('#results'), el('div', { class: 'msg err', text: e.message })); }
 }
 async function showArtist(a, all) {
   artistCtx = a; selected.clear(); drawActions(); results = [];
-  const alts = all.filter(x => x.id !== a.id).slice(0, 4);
-  fill($('#artistBar'), alts.length ? el('div', { class: 'alts' }, el('span', { text: 'Not them?' }), alts.map(x =>
-    el('button', { class: 'chip', type: 'button', text: x.name + (x.disambiguation ? ' · ' + x.disambiguation : ''), onclick: () => showArtist(x, all) }))) : null);
+  const alts = all.filter(x => x.id !== a.id).slice(0, 5), line = el('p', { class: 'sub', text: who(a) });
+  fill($('#artistBar'), line, alts.length ? el('div', { class: 'alts' }, el('span', { text: 'Not them?' }), alts.map(x =>
+    el('button', { class: 'chip', type: 'button', text: x.name + (who(x) ? ' · ' + who(x) : ''), onclick: () => showArtist(x, all) }))) : null);
+  if (!a.type && !a.country && !a.disambiguation) api('/api/artist-info/' + a.id).then(i => { if (artistCtx === a) line.textContent = who(i); }).catch(() => {});
   fill($('#results'), skeleton()); fill($('#similar'));
   api(`/api/similar/${a.id}?name=${encodeURIComponent(a.name)}`).then(({ artists }) => {
     if (artistCtx !== a || !artists.length) return;
