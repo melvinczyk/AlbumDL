@@ -115,30 +115,63 @@ class Library:
         self.refresh()
         return True
 
-    def incomplete_albums(self) -> List[dict]:
-        from mutagen.id3 import ID3
+    def albums(self) -> List[dict]:
+        self.refresh()
         out = []
         for artist in sorted(self._subfolders(self.out_root).values(), key=str.lower):
             apath = os.path.join(self.out_root, artist)
             for album in sorted(self._subfolders(apath).values(), key=str.lower):
-                marker = os.path.join(apath, album, pipeline.INCOMPLETE)
-                if not os.path.exists(marker):
+                tracks = size = 0
+                newest = 0.0
+                cover = incomplete = False
+                try:
+                    for f in os.scandir(os.path.join(apath, album)):
+                        low = f.name.lower()
+                        if f.name.startswith(".") or not f.is_file():
+                            continue
+                        if low.endswith(AUDIO):
+                            st = f.stat()
+                            tracks, size, newest = tracks + 1, size + st.st_size, max(newest, st.st_mtime)
+                        elif low == "cover.jpg":
+                            cover = True
+                        elif f.name == pipeline.INCOMPLETE:
+                            incomplete = True
+                except OSError:
                     continue
-                with open(marker, encoding="utf-8", errors="replace") as f:
-                    parts = f.read().split("\n\n")
-                row = {"artist": artist, "title": album, "group_id": "",
-                       "missing": [l for l in (parts[1].split("\n") if len(parts) > 1 else []) if l.strip()]}
-                songs = sorted(f.path for f in os.scandir(os.path.join(apath, album)) if f.name.lower().endswith(".mp3") and not f.name.startswith("."))
-                if songs:
-                    try:
-                        id3 = ID3(songs[0])
-                        row["group_id"] = next((str(f.text[0]) for f in id3.getall("TXXX") if f.desc == "MusicBrainz Release Group Id" and f.text), "")
-                        row["artist"] = str((id3.get("TPE2") or [artist])[0])
-                        row["title"] = str((id3.get("TALB") or [album])[0])
-                    except Exception:
-                        pass
-                out.append(row)
+                if not tracks and not incomplete:
+                    continue
+                missing = []
+                if incomplete:
+                    with open(os.path.join(apath, album, pipeline.INCOMPLETE), encoding="utf-8", errors="replace") as f:
+                        parts = f.read().split("\n\n")
+                    missing = [l for l in (parts[1].split("\n") if len(parts) > 1 else []) if l.strip()]
+                out.append({"artist": artist, "title": album, "tracks": tracks, "size": size, "mtime": newest,
+                            "cover": cover, "incomplete": incomplete, "missing": missing})
         return out
+
+    def incomplete_albums(self, only: Optional[set] = None) -> List[dict]:
+        from mutagen.id3 import ID3
+        out = []
+        for row in self.albums():
+            if not row["incomplete"] or (only is not None and (row["artist"], row["title"]) not in only):
+                continue
+            row = dict(row, group_id="")
+            songs = sorted(f.path for f in os.scandir(os.path.join(self.out_root, row["artist"], row["title"]))
+                           if f.name.lower().endswith(".mp3") and not f.name.startswith("."))
+            if songs:
+                try:
+                    id3 = ID3(songs[0])
+                    row["group_id"] = next((str(f.text[0]) for f in id3.getall("TXXX") if f.desc == "MusicBrainz Release Group Id" and f.text), "")
+                except Exception:
+                    pass
+            out.append(row)
+        return out
+
+    def cover_path(self, artist: str, album: str) -> Optional[str]:
+        artist_dir = self._find(self.out_root, artist)
+        album_dir = artist_dir and self._find(os.path.join(self.out_root, artist_dir), album)
+        path = album_dir and os.path.join(self.out_root, artist_dir, album_dir, "cover.jpg")
+        return path if path and os.path.isfile(path) else None
 
 
 class Job:

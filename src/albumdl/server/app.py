@@ -211,15 +211,31 @@ def create_app(settings: Settings) -> FastAPI:
             return {"batch": None, "duplicates": len(groups)}
         return {"batch": jobs.discography(name, fresh, bool(body.get("skip_owned", True))).summary(), "duplicates": len(groups) - len(fresh)}
 
-    @app.get("/api/library/incomplete")
-    def incomplete():
-        return {"albums": library.incomplete_albums()}
+    @app.get("/api/library")
+    def library_list():
+        return {"albums": library.albums()}
+
+    thumbs: dict = {}
+
+    @app.get("/api/library/art")
+    def library_art(artist: str = "", album: str = ""):
+        path = library.cover_path(artist[:200], album[:200])
+        if not path:
+            raise HTTPException(404, "no cover")
+        key = (path, os.path.getmtime(path))
+        if key not in thumbs:
+            if len(thumbs) > 600:
+                thumbs.pop(next(iter(thumbs)))
+            with open(path, "rb") as f:
+                thumbs[key] = tagging.to_jpeg(f.read(), max_side=200)
+        return Response(thumbs[key], media_type="image/jpeg", headers={"Cache-Control": "public, max-age=3600"})
 
     @app.post("/api/library/retry-incomplete")
     @guarded
-    def retry_incomplete():
+    def retry_incomplete(body: dict = Body(default={})):
+        only = {(str(a.get("artist", "")), str(a.get("title", ""))) for a in body.get("albums", []) if isinstance(a, dict)} if body.get("albums") else None
         groups, queued = [], jobs.active_groups()
-        for row in library.incomplete_albums():
+        for row in library.incomplete_albums(only):
             gid = row["group_id"]
             if not gid:
                 found = mb.search_albums(row["artist"], row["title"], limit=5)

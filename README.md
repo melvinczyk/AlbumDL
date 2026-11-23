@@ -37,8 +37,8 @@ OUTPUT_DIR=./out .venv/bin/albumdl
 - Albums already in the folder are marked **In folder**.
 - Tap albums, EPs or singles to select them (or **Select all** for a discography), then press **Download**. Downloading an album that is already there replaces it.
 - Select albums marked **In folder** and press **Delete** (twice, to confirm) to remove their folders from disk. Navidrome keeps deleted albums as empty "missing" entries until you remove them in its Missing Files page, or set `ND_SCANNER_PURGEMISSING=full` on the Navidrome container.
-- **Find missing covers** (bottom of the Queue) scans the music folder for albums without a `cover.jpg`, looks the cover up again and embeds it. Results are in the Log. Navidrome shows the new covers after its next scan.
-- **Check incomplete** (bottom of the Queue) lists albums with missing tracks and can retry them all. Albums already queued are skipped, and folders with a slightly different name still count as **In folder**.
+- **Find missing covers** (in the Library) scans the music folder for albums without a `cover.jpg`, looks the cover up again and embeds it. Results are in the Log. Navidrome shows the new covers after its next scan.
+- **Library** lists every album in the music folder with its tracks, size, age and whether it is incomplete or has no cover. Tap albums to select them, then **Delete** (twice, to confirm) or **Retry** the incomplete ones. Folders with a slightly different name still count as **In folder** in Search.
 - If a track still fails after many retries, the album folder gets an `INCOMPLETE.txt` listing what is missing, and the album is tagged **Incomplete**.
 - `Queue` shows progress, with the tracks of each album inside its row. `Log` shows the server log.
 - If no official upload exists for a track, the best matching upload is used and marked **Unofficial upload** in the queue.

@@ -24,6 +24,7 @@
 
   <nav id="nav">
     <button data-view="search" aria-selected="true"><span class="pi search"></span><b>Search</b></button>
+    <button data-view="library" aria-selected="false"><span class="pi folder"></span><b>Library</b></button>
     <button data-view="queue" aria-selected="false"><span class="pi download"></span><b>Queue</b><em class="badge" id="bQueue" hidden>0</em></button>
     <button data-view="log" aria-selected="false"><span class="pi console"></span><b>Log</b><em class="badge bad" id="bLog" hidden>0</em></button>
   </nav>
@@ -39,12 +40,20 @@
     <div id="results"></div>
   </main>
 
+  <main class="view" id="v-library">
+    <div class="logbar">
+      <input type="text" id="libFilter" placeholder="Filter albums" aria-label="Filter albums">
+      <button class="btn sm ghost" id="coversBtn" type="button">Find missing covers</button>
+    </div>
+    <div class="alts" id="libChips"></div>
+    <p class="sub" id="libSum"></p>
+    <div id="libList"></div>
+  </main>
+
   <main class="view" id="v-queue">
     <div id="batches"></div>
     <div id="jobs"></div>
     <p class="foot" id="stats"></p>
-    <div id="report"></div>
-    <p class="foot"><button class="btn sm ghost" id="incBtn" type="button">Check incomplete</button> <button class="btn sm ghost" id="coversBtn" type="button">Find missing covers</button></p>
   </main>
 
   <main class="view" id="v-log">
@@ -62,6 +71,7 @@
 <div class="actions" id="actions" hidden>
   <span id="actionText"></span>
   <button class="btn ghost" id="clearSel" type="button">Clear</button>
+  <button class="btn hot" id="retryBtn" type="button" hidden>Retry</button>
   <button class="btn ghost danger" id="delBtn" type="button" hidden>Delete</button>
   <button class="btn go" id="dlBtn" type="button"><span class="pi download k"></span><span id="dlLabel">Download</span></button>
 </div>

@@ -99,7 +99,7 @@ input[type=text]:focus { outline: none; border-color: var(--c1); }
 
 .actions { position: fixed; z-index: 20; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom, 0px)); width: min(520px, calc(100% - 32px));
   display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 20px; background: var(--k); border: 2px solid var(--c1); border-radius: 999px; box-shadow: 0 6px 24px rgba(0, 0, 0, .5); }
-.actions span { flex: 1; min-width: 0; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.actions #actionText { flex: 1; min-width: 0; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .sec { display: flex; align-items: center; gap: 10px; margin: 20px 0 8px; font: 800 12px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--c2); }
 .sec:first-child { margin-top: 0; }
@@ -227,3 +227,16 @@ nav button { transition: background .2s, color .2s; }
 .chip.sim:not(:has(.av)) { padding-left: 14px; }
 .chip.sim .pi { --s: 14px; margin-right: -4px; }
 .chip.sim.own { border-color: var(--c1); color: var(--w); }
+
+.sub { margin: 0 0 10px; color: var(--c2); font-size: 13px; }
+.lrow { position: relative; display: flex; align-items: center; gap: 12px; width: 100%; margin-bottom: 8px; padding: 8px 12px 8px 8px; text-align: left; background: var(--p); border: 2px solid var(--line); border-radius: 12px; content-visibility: auto; contain-intrinsic-size: 70px; transition: border-color .15s, background .15s; }
+.lrow:hover { border-color: var(--t2); }
+.lrow.on { border-color: var(--c1); background: var(--p2); }
+.lrow .cover { flex: none; width: 52px; border-radius: 8px; }
+.lrow .jtext .st { white-space: normal; display: block; font-size: 12px; overflow-wrap: anywhere; }
+.lrow .tick { position: static; flex: none; opacity: 1; background: none; border-color: var(--line); }
+.lrow.on .tick { background: var(--c1); border-color: var(--c1); } .lrow.on .tick .pi { filter: brightness(0); }
+.lrow:not(.on) .tick .pi { opacity: 0; }
+.lrow.sk { height: 68px; }
+#libList .sec { margin-top: 18px; }
+#v-library .logbar input { flex: 1; }

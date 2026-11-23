@@ -41,7 +41,7 @@ function cover(url) {
   return box;
 }
 
-const VIEWS = { search: 'search', queue: 'queue', log: 'log', discover: 'search', console: 'log' };
+const VIEWS = { search: 'search', library: 'library', queue: 'queue', log: 'log', discover: 'search', console: 'log' };
 let view = 'search';
 function show(name) {
   name = VIEWS[name] || 'search'; view = name; store.set('view', name);
@@ -51,6 +51,7 @@ function show(name) {
   drawActions();
   if (name === 'log') { unseen = 0; badges(); renderLog(); }
   if (name === 'queue') tick();
+  if (name === 'library') loadLibrary();
   scrollTo(0, 0);
 }
 document.querySelectorAll('[data-view]').forEach(b => b.addEventListener('click', () => show(b.dataset.view)));
@@ -138,29 +139,44 @@ function renderResults() {
     })));
   fresh = false; drawActions();
 }
+const libSel = new Map(), lkey = a => a.artist + '\u0000' + a.title;
 function drawActions() {
-  const n = selected.size;
-  $('#actions').hidden = !n || view !== 'search';
+  const lib_ = view === 'library', n = lib_ ? libSel.size : selected.size;
+  $('#actions').hidden = !n || (view !== 'search' && !lib_);
+  $('#dlBtn').hidden = lib_; $('#retryBtn').hidden = !(lib_ && [...libSel.values()].some(a => a.incomplete));
+  if (lib_) {
+    $('#actionText').textContent = `${n === 1 ? '1 album' : n + ' albums'} · ${bytes([...libSel.values()].reduce((t, a) => t + a.size, 0))}`;
+    $('#delBtn').hidden = false; return;
+  }
   const have = [...selected.keys()].filter(id => (results.find(r => r.id === id) || {}).owned).length, own = n && have === n;
   $('#actionText').textContent = (n === 1 ? '1 album' : n + ' albums') + (have && !own ? ` · ${have} in folder` : '');
   $('#dlLabel').textContent = own ? 'Download again' : 'Download';
   $('#delBtn').hidden = !own; if (!own) resetDelete();
 }
-$('#clearSel').addEventListener('click', () => { selected.clear(); drawActions(); if (results.length) renderResults(); });
+$('#clearSel').addEventListener('click', () => { if (view === 'library') { libSel.clear(); renderLibrary(); } else { selected.clear(); if (results.length) renderResults(); } drawActions(); });
 let delTimer = null;
 function resetDelete() { clearTimeout(delTimer); delTimer = null; $('#delBtn').textContent = 'Delete'; $('#delBtn').classList.remove('armed'); }
 $('#delBtn').addEventListener('click', async () => {
   const btn = $('#delBtn');
-  if (!delTimer) { btn.textContent = `Delete ${selected.size} from disk?`; btn.classList.add('armed'); delTimer = setTimeout(resetDelete, 4000); return; }
+  const lib_ = view === 'library';
+  if (!delTimer) { btn.textContent = `Delete ${lib_ ? libSel.size : selected.size} from disk?`; btn.classList.add('armed'); delTimer = setTimeout(resetDelete, 4000); return; }
   resetDelete(); btn.disabled = true;
-  const groups = [...selected.values()];
+  const groups = lib_ ? [...libSel.values()] : [...selected.values()];
   try {
     const r = await api('/api/library/delete', { albums: groups });
     groups.forEach(g => { const row = results.find(x => x.id === g.id); if (row && !r.skipped) row.owned = null; });
     toast(r.skipped ? `Deleted ${r.deleted}. ${r.skipped} still downloading.` : `Deleted ${r.deleted} ${r.deleted === 1 ? 'album' : 'albums'}`, 'ok');
-    selected.clear(); renderResults();
+    if (lib_) { libSel.clear(); await loadLibrary(); } else { selected.clear(); renderResults(); }
   } catch (e) { toast(e.message, 'error'); }
   btn.disabled = false;
+});
+$('#retryBtn').addEventListener('click', async () => {
+  const albums = [...libSel.values()].filter(a => a.incomplete);
+  try {
+    const r = await api('/api/library/retry-incomplete', { albums });
+    toast(r.queued ? `Queued ${r.queued} ${r.queued === 1 ? 'album' : 'albums'}` : 'Nothing to queue', 'ok', { label: 'Queue', fn: () => show('queue') });
+    libSel.clear(); renderLibrary(); drawActions(); tick();
+  } catch (e) { toast(e.message, 'error'); }
 });
 $('#dlBtn').addEventListener('click', async () => {
   const groups = [...selected.values()], btn = $('#dlBtn'); btn.disabled = true;
@@ -173,6 +189,38 @@ $('#dlBtn').addEventListener('click', async () => {
   btn.disabled = false;
 });
 
+const ago = t => { const d = (Date.now() / 1000 - t) / 86400; return d < 1 ? 'today' : d < 2 ? 'yesterday' : d < 30 ? Math.floor(d) + 'd ago' : d < 365 ? Math.floor(d / 30) + 'mo ago' : Math.floor(d / 365) + 'y ago'; };
+let lib = [], libMode = 'All';
+async function loadLibrary() {
+  if (!lib.length) fill($('#libList'), el('div', { class: 'grid' }, Array.from({ length: 6 }, () => el('div', { class: 'lrow sk' }, el('span', { class: 'cover' })))));
+  try { lib = (await api('/api/library')).albums; } catch (e) { return fill($('#libList'), el('div', { class: 'msg err', text: e.message })); }
+  const keys = new Set(lib.map(lkey)); [...libSel.keys()].forEach(k => keys.has(k) || libSel.delete(k));
+  renderLibrary(); drawActions();
+}
+function renderLibrary() {
+  const q = $('#libFilter').value.trim().toLowerCase(), inc = lib.filter(a => a.incomplete).length, bare = lib.filter(a => !a.cover).length;
+  const modes = [['All', lib.length], ['Recent', 0], ['Incomplete', inc], ['No cover', bare]];
+  fill($('#libChips'), modes.map(([m, c]) => el('button', { class: 'chip' + (m === libMode ? ' on' : ''), type: 'button', text: c ? `${m} · ${c}` : m, onclick: () => { libMode = m; renderLibrary(); } })));
+  let rows = lib.filter(a => (!q || (a.artist + ' ' + a.title).toLowerCase().includes(q)) && ({ All: 1, Recent: 1, Incomplete: a.incomplete, 'No cover': !a.cover }[libMode]));
+  if (libMode === 'Recent') rows = rows.slice().sort((a, b) => b.mtime - a.mtime).slice(0, 40);
+  $('#libSum').textContent = lib.length ? `${rows.length} albums · ${rows.reduce((t, a) => t + a.tracks, 0)} tracks · ${bytes(rows.reduce((t, a) => t + a.size, 0))}` : '';
+  const row = a => {
+    const r = el('button', { class: 'lrow' + (libSel.has(lkey(a)) ? ' on' : ''), type: 'button', 'aria-pressed': libSel.has(lkey(a)), onclick: () => {
+      const on = !libSel.has(lkey(a)); on ? libSel.set(lkey(a), a) : libSel.delete(lkey(a)); r.classList.toggle('on', on); r.setAttribute('aria-pressed', on); drawActions(); } },
+      a.cover ? cover('/api/library/art?' + new URLSearchParams({ artist: a.artist, album: a.title })) : el('span', { class: 'cover' }),
+      el('span', { class: 'jtext' }, el('b', { text: a.title, title: a.title }),
+        el('small', { text: [libMode === 'All' ? '' : a.artist, a.tracks + (a.tracks === 1 ? ' track' : ' tracks'), bytes(a.size), a.mtime ? ago(a.mtime) : ''].filter(Boolean).join(' · ') }),
+        a.incomplete ? el('span', { class: 'st part', text: a.missing.length ? `Missing ${a.missing.length}: ${a.missing.join(', ')}` : 'Incomplete' }) : !a.cover ? el('span', { class: 'st wait', text: 'No cover' }) : null),
+      el('span', { class: 'tick' }, pic('check', 'c')));
+    return r;
+  };
+  if (!rows.length) return fill($('#libList'), el('div', { class: 'empty', text: lib.length ? 'No albums match.' : 'No albums in the music folder yet.' }));
+  const out = [];
+  if (libMode === 'All') { let last = null; rows.forEach(a => { if (a.artist !== last) { last = a.artist; out.push(el('div', { class: 'sec', text: a.artist })); } out.push(row(a)); }); }
+  else rows.forEach(a => out.push(row(a)));
+  fill($('#libList'), out);
+}
+$('#libFilter').addEventListener('input', renderLibrary);
 const nodes = new Map(), openSet = new Map();
 let busy = false, order = '';
 const isOpen = j => openSet.has(j.id) ? openSet.get(j.id) : j.status === 'running';
@@ -282,20 +330,6 @@ $('#copyBtn').addEventListener('click', async () => {
 $('#coversBtn').addEventListener('click', async () => {
   try { await api('/api/library/covers', {}); toast('Looking for missing covers. Progress is in the Log.', 'ok', { label: 'Log', fn: () => show('log') }); }
   catch (e) { toast(e.message, 'error'); }
-});
-$('#incBtn').addEventListener('click', async () => {
-  const host = $('#report');
-  try {
-    const { albums } = await api('/api/library/incomplete');
-    fill(host, el('div', { class: 'report' }, !albums.length ? el('div', { class: 'hint', text: 'No incomplete albums in the folder.' }) : [
-      el('div', { class: 'sec' }, `Incomplete · ${albums.length}`, el('button', { class: 'btn sm hot', type: 'button', text: 'Retry all', onclick: async ev => {
-        ev.target.disabled = true;
-        try { const r = await api('/api/library/retry-incomplete', {}); fill(host); toast(r.queued ? `Queued ${r.queued} albums` : 'Nothing to queue', 'ok'); tick(); } catch (e) { toast(e.message, 'error'); ev.target.disabled = false; }
-      } })),
-      albums.map(a => el('div', { class: 'job' }, el('div', { class: 'jmain' }, el('div', { class: 'jtext' }, el('b', { text: a.title }), el('small', { text: a.artist }),
-        el('span', { class: 'st failed', text: a.missing.length ? `Missing: ${a.missing.join(', ')}` : 'Some tracks are missing' }))))),
-    ]));
-  } catch (e) { toast(e.message, 'error'); }
 });
 let timer = null, offline = false, ticks = 0, errAt = 0, lastErrs = null, slow = false;
 function applyStats(s) {
