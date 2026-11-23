@@ -259,10 +259,6 @@ nav button { transition: background .2s, color .2s; }
 
 .lrow.upl .cover { width: 96px; aspect-ratio: 16 / 9; }
 .lrow.upl .jtext b { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.howto { display: grid; gap: 10px; margin-top: 8px; }
-.howto div { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 12px; align-items: baseline; padding: 12px 14px; background: var(--p); border: 2px solid var(--line); border-radius: 12px; }
-.howto b { color: var(--c1); font: 800 12px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
-.howto span { color: var(--c2); }
 
 .edit { margin-bottom: 18px; padding: 14px; background: var(--p); border: 2px solid var(--c1); border-radius: 14px; }
 .edit .bar { margin-top: 0; }
