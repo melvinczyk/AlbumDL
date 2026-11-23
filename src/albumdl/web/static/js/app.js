@@ -233,6 +233,7 @@ function drawActions() {
   $('#actions').hidden = !n || (view !== 'search' && !lib_);
   drawEditions();
   $('#editBtn').hidden = !(lib_ && n === 1);
+  $('#expBtn').hidden = !lib_;
   $('#linkBtn').hidden = !(lib_ && n === 1 && [...libSel.values()][0].missing.length);
   $('#dlBtn').hidden = lib_; $('#retryBtn').hidden = !(lib_ && [...libSel.values()].some(a => a.incomplete));
   if (lib_) {
@@ -287,7 +288,7 @@ let lib = [], libMode = 'All';
 async function loadLibrary() {
   if (!lib.length) fill($('#libList'), el('div', { class: 'grid' }, Array.from({ length: 6 }, () => el('div', { class: 'lrow sk' }, el('span', { class: 'cover' })))));
   try { lib = (await api('/api/library')).albums; } catch (e) { return fill($('#libList'), el('div', { class: 'msg err', text: e.message })); }
-  const keys = new Set(lib.map(lkey)); [...libSel.keys()].forEach(k => keys.has(k) || libSel.delete(k));
+  const fresh = new Map(lib.map(a => [lkey(a), a])); [...libSel.keys()].forEach(k => fresh.has(k) ? libSel.set(k, fresh.get(k)) : libSel.delete(k));
   renderLibrary(); drawActions();
 }
 function renderLibrary() {
@@ -379,6 +380,86 @@ async function openLyrics(a) {
     el('div', { style: 'margin-top:12px' }, el('button', { class: 'btn ghost', type: 'button', text: 'Close', onclick: () => { host.hidden = true; } }))));
   host.hidden = false; host.scrollIntoView({ block: 'start', behavior: 'smooth' });
 }
+$('#expBtn').addEventListener('click', () => openExport([...libSel.values()].map(a => ({ artist: a.artist, title: a.title }))));
+$('#expAllBtn').addEventListener('click', () => openExport(null));
+const crcTable = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+const crc32 = buf => { const b = new Uint8Array(buf); let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = crcTable[(c ^ b[i]) & 0xFF] ^ (c >>> 8); return ((c ^ 0xFFFFFFFF) >>> 0).toString(16).padStart(8, '0'); };
+async function openExport(albums) {
+  const host = $('#libEdit');
+  let m;
+  try { m = await api('/api/export/manifest', albums ? { albums } : { all: true }); } catch (e) { return toast(e.message, 'error'); }
+  if (!m.files.length) return toast('Nothing to export', 'error');
+  const status = el('p', { class: 'sub' }), fillBar = el('i'), meter = el('div', { class: 'meter expmeter' }, fillBar);
+  const set = (text, pct) => { status.textContent = text; if (pct != null) fillBar.style.setProperty('--v', pct + '%'); };
+  const what = albums ? `${albums.length} ${albums.length === 1 ? 'album' : 'albums'}` : 'Everything';
+  let stop = false, busy = false;
+  const idle = `${what}: ${m.files.length} files, ${bytes(m.bytes)}.`;
+  const sameOnDevice = async (x, file) => crc32(await file.arrayBuffer()) === (await api('/api/export/hashes', { paths: [x.path] }))[x.path];
+  const guard = fn => async () => { if (busy) return; busy = true; stop = false; try { await fn(); } catch (e) { set(e.message); toast(e.message, 'error'); } busy = false; };
+
+  const copy = guard(async () => {
+    let root;
+    try { root = await showDirectoryPicker({ id: 'albumdl-export', mode: 'readwrite' }); } catch (_) { return; }
+    const dirs = new Map(), queue = m.files.slice();
+    const dirOf = parts => { const k = parts.join('/'); if (!dirs.has(k)) dirs.set(k, (async () => { let d = root; for (const p of parts) d = await d.getDirectoryHandle(p, { create: true }); return d; })()); return dirs.get(k); };
+    let done = 0, copied = 0, skipped = 0, failed = 0;
+    const one = async x => {
+      const parts = x.path.split('/'), name = parts.pop(), dir = await dirOf(parts);
+      let fh = null;
+      try { fh = await dir.getFileHandle(name); } catch (_) {}
+      if (fh) { const f = await fh.getFile(); if (f.size === x.size && await sameOnDevice(x, f)) { skipped++; return; } }
+      fh = fh || await dir.getFileHandle(name, { create: true });
+      const r = await fetch('/api/export/file?path=' + encodeURIComponent(x.path));
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      await r.body.pipeTo(await fh.createWritable());
+      copied++;
+    };
+    const worker = async () => { while (queue.length && !stop) { const x = queue.shift(); try { await one(x); } catch (_) { failed++; } done++; set(`Copied ${copied}, already there ${skipped}${failed ? `, failed ${failed}` : ''} · ${done} of ${m.files.length}`, Math.round(100 * done / m.files.length)); } };
+    await Promise.all([worker(), worker(), worker()]);
+    set((stop ? 'Stopped. ' : 'Done. ') + `Copied ${copied}, ${skipped} were already there${failed ? `, ${failed} failed` : ''}.`, 100);
+  });
+
+  const compare = files => guard(async () => {
+    // the picked folder may be the player itself or its music folder: find the depth where the Artist/Album layout starts
+    const known = new Set(m.files.map(x => x.path.normalize('NFC'))), rels = files.map(f => f.webkitRelativePath.normalize('NFC').split('/'));
+    let depth = 1, hits = -1;
+    for (let d = 1; d <= 4; d++) { const c = rels.filter(p => p.length > d && known.has(p.slice(d).join('/'))).length; if (c > hits) { hits = c; depth = d; } }
+    const base = rels.length ? rels[0].slice(0, depth).join('/') : '';
+    const local = new Map();
+    files.forEach((f, i) => { if (rels[i].length > depth) local.set(rels[i].slice(depth).join('/'), f); });
+    const need = [], check = [];
+    let same = 0;
+    for (const x of m.files) {
+      const f = local.get(x.path.normalize('NFC'));
+      if (!f || f.size !== x.size) need.push(x); else if (Math.abs(f.lastModified / 1000 - x.mtime) <= 2) same++; else check.push([x, f]);
+    }
+    for (let i = 0; i < check.length && !stop; i++) {
+      set(`Checking files that might have changed · ${i + 1} of ${check.length}`, Math.round(100 * i / check.length));
+      (await sameOnDevice(...check[i])) ? same++ : need.push(check[i][0]);
+    }
+    if (stop) return set('Stopped.');
+    if (!need.length) return set(`Everything is already on the player (${same} files).`, 100);
+    const { token } = await api('/api/export/prepare', { paths: need.map(x => x.path) });
+    set(`${need.length} new or changed files (${bytes(need.reduce((t, x) => t + x.size, 0))}), ${same} already there. Your browser is downloading a ZIP of them; unzip it into "${base}" on the player.`, 100);
+    location.href = '/api/export/zip?token=' + token;
+  })();
+  const pickIn = el('input', { type: 'file', webkitdirectory: true, multiple: true, hidden: true, onchange: () => { const files = [...pickIn.files]; pickIn.value = ''; if (files.length) compare(files); } });
+  const zipAll = guard(async () => { const { token } = await api('/api/export/prepare', { paths: m.files.map(x => x.path) }); set('Your browser is downloading a ZIP of ' + what.toLowerCase() + '.', 100); location.href = '/api/export/zip?token=' + token; });
+  const direct = !!(window.showDirectoryPicker && window.isSecureContext);
+  fill(host, el('div', { class: 'edit' }, el('div', { class: 'bar' }, el('h2', { text: 'Export' }), el('span', { class: 'sub', text: what })),
+    el('p', { class: 'sub', text: direct
+      ? 'Pick the folder on your MP3 player that should hold the artist folders. Files already there with the same checksum are skipped.'
+      : 'Pick your MP3 player or its music folder. It is expected to use the same Artist/Album folders as the server. AlbumDL compares it with your library and downloads a ZIP of only what is new or changed. Your browser may say it is uploading; nothing is sent, it only reads the files.' }),
+    meter, status,
+    el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:12px' },
+      direct ? el('button', { class: 'btn go', type: 'button', text: 'Choose folder and copy', onclick: copy }) : null,
+      el('button', { class: direct ? 'btn ghost' : 'btn go', type: 'button', text: 'Compare with player', onclick: () => pickIn.click() }), pickIn,
+      el('button', { class: 'btn ghost', type: 'button', text: 'Download all as ZIP', onclick: zipAll }),
+      el('button', { class: 'btn ghost', type: 'button', text: 'Stop', onclick: () => { stop = true; } }),
+      el('button', { class: 'btn ghost', type: 'button', text: 'Close', onclick: () => { stop = true; host.hidden = true; } }))));
+  set(idle, 0);
+  host.hidden = false; host.scrollIntoView({ block: 'start', behavior: 'smooth' });
+}
 $('#editBtn').addEventListener('click', () => { const a = [...libSel.values()][0]; if (a) openEditor(a.artist, a.title); });
 async function openEditor(artist, title) {
   let d;
@@ -399,7 +480,7 @@ async function openEditor(artist, title) {
   const coverRow = el('div', { class: 'coverrow' }, thumb, el('div', { class: 'coverset' },
     el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, el('button', { class: 'btn sm', type: 'button', text: 'Choose image', onclick: () => fileIn.click() }), fileIn, linkIn,
       el('button', { class: 'btn sm ghost', type: 'button', text: 'Use link', onclick: () => applyCover(api('/api/library/cover-url', { artist: d.artist_dir, album: d.album_dir, url: linkIn.value, square })).then(() => { linkIn.value = ''; }) })),
-    el('label', { class: 'check', style: 'margin-top:8px' }, el('input', { type: 'checkbox', checked: true, onchange: ev => { square = ev.target.checked; } }), ' Crop to a square. Any image type is converted to JPG, and the change applies right away.')));
+    el('label', { class: 'checkline', style: 'margin-top:8px' }, el('input', { type: 'checkbox', checked: true, onchange: ev => { square = ev.target.checked; } }), ' Crop to a square. Any image type is converted to JPG, and the change applies right away.')));
   const save = el('button', { class: 'btn go', type: 'button', text: 'Save tags', onclick: async () => {
     save.disabled = true;
     try {
@@ -413,7 +494,7 @@ async function openEditor(artist, title) {
     coverRow,
     el('div', { class: 'imp' }, field('Artist', 'artist', ''), field('Album', 'album', ''), field('Year', 'year', '2012'), field('Genre', 'genre', 'optional'), field('Label', 'label', 'optional')),
     el('div', { class: 'tlist' }, d.tracks.map((t, i) => { const inp = el('input', { type: 'text', value: t.title, 'aria-label': 'Track ' + (i + 1) + ' title', oninput: () => { titles[t.file] = inp.value; } }); return el('div', { class: 'erow' }, el('span', { class: 'sz', text: String(i + 1).padStart(2, '0') }), inp); })),
-    el('label', { class: 'check' }, el('input', { type: 'checkbox', checked: true, onchange: ev => { rename = ev.target.checked; } }), ' Rename the folder and files to match'),
+    el('label', { class: 'checkline' }, el('input', { type: 'checkbox', checked: true, onchange: ev => { rename = ev.target.checked; } }), ' Rename the folder and files to match'),
     el('div', { class: 'row', style: 'display:flex;gap:8px;margin-top:12px' }, save, el('button', { class: 'btn ghost', type: 'button', text: 'Cancel', onclick: () => { host.hidden = true; } }))));
   host.hidden = false; host.scrollIntoView({ block: 'start', behavior: 'smooth' });
 }
@@ -477,7 +558,7 @@ function paintTracks(n, d) {
 }
 const sec = (text, extra) => el('div', { class: 'sec' }, text, extra);
 function applyJobs(jobs, batches) {
-  const run = jobs.filter(j => j.status === 'running'), wait = jobs.filter(j => j.status === 'queued'), fin = jobs.filter(j => !['running', 'queued'].includes(j.status)).reverse();
+  const run = jobs.filter(j => j.status === 'running'), wait = jobs.filter(j => j.status === 'queued').reverse(), fin = jobs.filter(j => !['running', 'queued'].includes(j.status));
   const adding = batches.filter(b => b.status === 'running');
   busy = run.length + wait.length > 0 || adding.length > 0;
   const active = run.length + wait.length, bq = $('#bQueue'); bq.hidden = !active; bq.textContent = active;
@@ -535,7 +616,7 @@ let timer = null, offline = false, ticks = 0, errAt = 0, lastErrs = null, slow =
 function applyStats(s) {
   if (lastErrs !== null && s.mb.errors > lastErrs) errAt = Date.now();
   lastErrs = s.mb.errors; slow = Date.now() - errAt < 30000;
-  $('#stats').textContent = `${s.tracks.done} ${s.tracks.done === 1 ? 'track' : 'tracks'} ·${bytes(s.bytes_out)} written · ${bytes(s.disk.free)} free`;
+  $('#stats').textContent = `${s.tracks.done} ${s.tracks.done === 1 ? 'track' : 'tracks'} · ${bytes(s.bytes_out)} written · ${bytes(s.disk.free)} free`;
 }
 async function tick() {
   clearTimeout(timer);

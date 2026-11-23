@@ -3,6 +3,10 @@ import os
 import re
 import shutil
 import threading
+import time
+import uuid
+import zipfile
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,7 +17,7 @@ import requests
 from fastapi import Body, Depends, FastAPI, Path as PathParam, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException
 
@@ -489,14 +493,15 @@ def create_app(settings: Settings) -> FastAPI:
                 found = mb.search_albums(row["artist"], row["title"], limit=5)
                 gid = found[0]["id"] if found else ""
             if gid and gid not in queued:
-                groups.append({"id": gid, "title": row["title"], "artist": row["artist"]})
+                groups.append({"id": gid, "title": row["title"], "artist": row["artist"], "release": row["mbid"],
+                               "folder": os.path.join(settings.out_root, row["artist"], row["title"])})
         if groups:
             jobs.discography("Incomplete albums", groups, False)
         return {"queued": len(groups)}
 
     @app.post("/api/library/delete")
     def delete_albums(body: dict = Body(...)):
-        albums = [(str(a.get("artist", "")), str(a.get("title", ""))) for a in body.get("albums", []) if isinstance(a, dict)][:150]
+        albums = [(str(a.get("artist", "")), str(a.get("title", ""))) for a in body.get("albums", []) if isinstance(a, dict)][:5000]
         busy = {(pipeline.safe(j.album.artist), pipeline.safe(j.album.title)) for j in jobs.listing() if j.status in ("queued", "running")}
         deleted = skipped = 0
         for artist, title in albums:
@@ -506,6 +511,103 @@ def create_app(settings: Settings) -> FastAPI:
                 deleted += 1
                 events.emit("warn", "library", f"deleted {artist} - {title}")
         return {"deleted": deleted, "skipped": skipped}
+
+    def lib_file(rel: str) -> str:
+        root = os.path.realpath(settings.out_root)
+        full = os.path.realpath(os.path.join(root, rel))
+        if not full.startswith(root + os.sep) or not os.path.isfile(full):
+            raise HTTPException(404, f"not in the library: {rel[:120]}")
+        return full
+
+    def export_list(only) -> list:
+        root, out = settings.out_root, []
+        folders = [os.path.join(root, a, t) for a, t in only] if only is not None else [root]
+        for top in folders:
+            for dirpath, dirs, files in os.walk(top):
+                dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+                for name in sorted(files):
+                    if name.startswith(".") or name.endswith(".part") or name == pipeline.INCOMPLETE:
+                        continue
+                    st = os.stat(os.path.join(dirpath, name))
+                    rel = os.path.relpath(os.path.join(dirpath, name), root).replace(os.sep, "/")
+                    out.append({"path": rel, "size": st.st_size, "mtime": int(st.st_mtime)})
+        return out
+
+    @app.post("/api/export/manifest")
+    def export_manifest(body: dict = Body(default={})):
+        only = None if body.get("all") else [(str(a.get("artist", "")), str(a.get("title", ""))) for a in body.get("albums", []) if isinstance(a, dict)]
+        files = export_list(only)
+        return {"files": files, "bytes": sum(f["size"] for f in files)}
+
+    @app.get("/api/export/file")
+    def export_file(path: str = ""):
+        return FileResponse(lib_file(path), media_type="application/octet-stream")
+
+    crcs: dict = {}
+
+    def crc_of(full: str) -> str:
+        st = os.stat(full)
+        key = (full, st.st_mtime, st.st_size)
+        if key not in crcs:
+            crc = 0
+            with open(full, "rb") as f:
+                while chunk := f.read(1 << 20):
+                    crc = zlib.crc32(chunk, crc)
+            crcs[key] = f"{crc & 0xFFFFFFFF:08x}"
+        return crcs[key]
+
+    @app.post("/api/export/hashes")
+    def export_hashes(body: dict = Body(...)):
+        paths = [str(p) for p in body.get("paths", [])][:20000]
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            return dict(zip(paths, pool.map(lambda p: crc_of(lib_file(p)), paths)))
+
+    zips: dict = {}
+
+    @app.post("/api/export/prepare")
+    def export_prepare(body: dict = Body(...)):
+        paths = [str(p) for p in body.get("paths", [])]
+        for p in paths:
+            lib_file(p)
+        for k in [k for k, v in zips.items() if time.time() - v[0] > 3600]:
+            zips.pop(k, None)
+        token = uuid.uuid4().hex
+        zips[token] = (time.time(), paths)
+        return {"token": token}
+
+    class _Sink:
+        def __init__(self):
+            self.parts = []
+
+        def write(self, b):
+            self.parts.append(bytes(b))
+            return len(b)
+
+        def flush(self):
+            pass
+
+        def take(self) -> bytes:
+            data, self.parts = b"".join(self.parts), []
+            return data
+
+    @app.get("/api/export/zip")
+    def export_zip(token: str = ""):
+        hit = zips.get(token)
+        if not hit:
+            raise HTTPException(404, "that download has expired; start the export again")
+
+        def stream():
+            sink = _Sink()
+            with zipfile.ZipFile(sink, "w", zipfile.ZIP_STORED, allowZip64=True) as zf:
+                for rel in hit[1]:
+                    try:
+                        zf.write(lib_file(rel), arcname=rel)
+                    except HTTPException:
+                        continue
+                    yield sink.take()
+            yield sink.take()
+        name = time.strftime("albumdl-%Y-%m-%d.zip")
+        return StreamingResponse(stream(), media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
     covers = {"running": False}
 

@@ -1,5 +1,7 @@
+import collections
 import glob
 import os
+import re
 import shutil
 import socket
 import tempfile
@@ -16,6 +18,12 @@ BAD_CHARS = '\\/:*?"<>|\n\r\t'
 ATTEMPTS = 5
 ROUNDS = 3
 INCOMPLETE = "INCOMPLETE.txt"
+# errors that will not go away by trying the same video again
+DEAD = re.compile(r"confirm your age|sign in|private video|video unavailable|not available|members-only|removed", re.I)
+
+
+class SourceFailed(Exception):
+    """This video could not be downloaded; another one will be tried."""
 
 
 def safe(s: str) -> str:
@@ -135,6 +143,8 @@ def run(album: mb.Album, opts: Options, log: Callable[[str], None] = print,
 
     src_tmp = tempfile.TemporaryDirectory()
     shared_locks = {t.source: threading.Lock() for t in album.tracks if t.end}
+    bad: set = set()
+    fails: collections.Counter = collections.Counter()
     shared_files: dict = {}
 
     def shared(vid: str):
@@ -165,15 +175,15 @@ def run(album: mb.Album, opts: Options, log: Callable[[str], None] = print,
             if t.source:
                 entry, why = {"id": t.source, "title": t.title, "channel": "YouTube link"}, "imported from a YouTube link"
             elif playlist:
-                entry = youtube.match_playlist(t, playlist, i, album)
+                entry = youtube.match_playlist(t, playlist, i, album, frozenset(bad))
                 if entry and entry.get("by_position"):
                     why = "official YouTube Music album playlist (matched by position and length)"
             if entry is None and not t.source:
-                song = retrying(lambda: youtube.find_song(t, album), opts.cancel)
+                song = retrying(lambda: youtube.find_song(t, album, frozenset(bad)), opts.cancel)
                 if song:
                     entry, why = song, "official YouTube Music song"
             if entry is None and not t.source:
-                hit = youtube.search_official(t, album)
+                hit = youtube.search_official(t, album, frozenset(bad))
                 entry, why = hit if hit else (None, "")
             t_find = time.time() - t0
             if entry is None:
@@ -187,7 +197,21 @@ def run(album: mb.Album, opts: Options, log: Callable[[str], None] = print,
             note(i, "working", f"downloading from {who}" if not t.end else "cutting the chapter out of the video", **info)
             with tempfile.TemporaryDirectory() as td:
                 t1 = time.time()
-                src, acodec, abr = shared(t.source) if t.end else youtube.download(url, td)
+                try:
+                    src, acodec, abr = shared(t.source) if t.end else youtube.download(url, td)
+                except Exception as exc:
+                    vid = entry.get("id")
+                    if not vid or t.source:
+                        raise
+                    with lock:
+                        fails[vid] += 1
+                        dead = bool(DEAD.search(str(exc))) or fails[vid] >= 2
+                        if dead:
+                            bad.add(vid)
+                    if not dead:
+                        raise
+                    say(f"[{i}/{total}] {who}'s upload will not download ({str(exc).splitlines()[0][:120]}); trying another source")
+                    raise SourceFailed(str(exc).splitlines()[0][:200]) from exc
                 info.update(t_dl=time.time() - t1, src_bytes=os.path.getsize(src), acodec=acodec, src_kbps=round(abr or 0))
                 note(i, "working", "encoding and tagging", **info)
                 tmp = os.path.join(td, "track.mp3")
@@ -219,7 +243,7 @@ def run(album: mb.Album, opts: Options, log: Callable[[str], None] = print,
                     say(f"[{i}/{total}] retry {n}: {t.title} ({msg})")
                     note(i, "working", f"retrying after error: {msg}", attempts=n)
                     wait_online(opts.cancel)
-                    opts.cancel.wait(min(90, 8 * 2 ** (n - 1)))
+                    opts.cancel.wait(2 if isinstance(exc, SourceFailed) else min(90, 8 * 2 ** (n - 1)))
             return "error"
 
         outcome = {}

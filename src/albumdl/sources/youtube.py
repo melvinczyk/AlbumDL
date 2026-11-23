@@ -301,10 +301,10 @@ def _video_info(entry: dict) -> Optional[dict]:
     return None
 
 
-def match_playlist(track: Track, entries: List[dict], index: int, album: Album) -> Optional[dict]:
+def match_playlist(track: Track, entries: List[dict], index: int, album: Album, skip: frozenset = frozenset()) -> Optional[dict]:
     best = None
     for e in entries:
-        if not title_matches(e.get("title") or "", track.title, album.title):
+        if e.get("id") in skip or not title_matches(e.get("title") or "", track.title, album.title):
             continue
         ratio = max(difflib.SequenceMatcher(None, core(v), core(e["title"])).ratio() for v in title_variants(track.title))
         dur = e.get("duration")
@@ -317,16 +317,18 @@ def match_playlist(track: Track, entries: List[dict], index: int, album: Album) 
     if len(entries) == len(album.tracks) and 0 < index <= len(entries):
         e = entries[index - 1]
         dur = e.get("duration")
+        if e.get("id") in skip:
+            return None
         if not (dur and track.length_ms) or abs(dur - track.length_ms / 1000) <= MAX_DURATION_DIFF:
             return dict(e, by_position=True)
     return None
 
 
-def find_song(track: Track, album: Album) -> Optional[dict]:
+def find_song(track: Track, album: Album, skip: frozenset = frozenset()) -> Optional[dict]:
     """YouTube Music song search: official uploads that name this album, matched by album, artist and length."""
     from ytmusicapi import YTMusic
     for r in YTMusic().search(f"{album.artist} {album.title} {track.title}", filter="songs", limit=12):
-        if not r.get("videoId") or core((r.get("album") or {}).get("name", "")) != core(album.title):
+        if not r.get("videoId") or r["videoId"] in skip or core((r.get("album") or {}).get("name", "")) != core(album.title):
             continue
         if not any(compact(a["name"]) in compact(album.artist) or compact(album.artist) in compact(a["name"]) for a in r.get("artists", [])):
             continue
@@ -338,13 +340,13 @@ def find_song(track: Track, album: Album) -> Optional[dict]:
     return None
 
 
-def search_official(track: Track, album: Album) -> Optional[Tuple[dict, str]]:
+def search_official(track: Track, album: Album, skip: frozenset = frozenset()) -> Optional[Tuple[dict, str]]:
     artist = track.artists[0]
     variants = title_variants(track.title)
     name = variants[1] if len(variants) > 1 else track.title
     queries = [f"{artist} {name} {album.title}", f"{artist} {name} official audio",
                f"{artist} - Topic {name}", f"{artist} - {name}"]
-    seen, pool = set(), []
+    seen, pool = set(skip), []
     found = {"official": None, "unofficial": None, "unchecked": 0}
 
     def scan(entries: List[dict], loose: bool):

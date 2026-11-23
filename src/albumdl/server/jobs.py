@@ -20,7 +20,7 @@ def level_of(msg: str) -> str:
     low = msg.lower()
     if low.startswith("done"):
         return "ok" if ", 0 failed" in low or "already" in low else "warn"
-    if "failed" in low or "no official source" in low or low.startswith("error"):
+    if "failed" in low or "no source found" in low or low.startswith("error"):
         return "error"
     if "retry" in low or "not found" in low or "no album playlist" in low:
         return "warn"
@@ -78,7 +78,8 @@ class Library:
         names, key = self._subfolders(path), _key(pipeline.safe(name))
         if key in names:
             return names[key]
-        close = difflib.get_close_matches(key, names, n=1, cutoff=0.88) if len(key) > 4 else []
+        digits = re.findall(r"\d+", key)
+        close = [c for c in difflib.get_close_matches(key, names, n=3, cutoff=0.88) if re.findall(r"\d+", c) == digits] if len(key) > 4 else []
         return names[close[0]] if close else None
 
     def has_artist(self, name: str) -> bool:
@@ -238,8 +239,12 @@ class Library:
             for old, new in names.items():
                 prefix = old.split(" - ", 1)[0] + " - " if " - " in old else ""
                 dest = os.path.join(folder, f"{prefix}{pipeline.safe(new)}.mp3")
-                if dest != os.path.join(folder, old):
+                if dest != os.path.join(folder, old) and not os.path.exists(dest):
                     os.replace(os.path.join(folder, old), dest)
+                    for ext in (".lrc", ".txt"):
+                        side = os.path.join(folder, old[:-4] + ext)
+                        if os.path.exists(side):
+                            os.replace(side, dest[:-4] + ext)
             if os.path.abspath(target) != os.path.abspath(folder):
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 os.rename(folder, target)
@@ -343,6 +348,10 @@ class JobManager:
         with self.lock:
             self.jobs[job.id] = job
             self.order.append(job.id)
+            done = [i for i in self.order if self.jobs[i].status in FINISHED]
+            for i in done[:max(0, len(done) - 300)]:
+                del self.jobs[i]
+                self.order.remove(i)
         self.pending.put(job)
         self.events.emit("info", "queue", f"queued: {album.artist} - {album.title}", job.id)
         return job
@@ -405,8 +414,9 @@ class JobManager:
                         raise RuntimeError("no releases listed")
                     release = editions[0]["id"]
                 album = mb.get_release(release)
-                if g.get("release") and album.edition and album.edition.lower() not in album.title.lower():
+                if g.get("release") and not g.get("folder") and album.edition and album.edition.lower() not in album.title.lower():
                     album.title = f"{album.title} ({album.edition})"
+                album.folder = g.get("folder") or ""
                 self.submit(album)
                 batch.queued += 1
             except BaseException as exc:

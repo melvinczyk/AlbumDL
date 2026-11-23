@@ -35,6 +35,7 @@ OUTPUT_DIR=./out .venv/bin/albumdl
 - **Not on MusicBrainz?** It falls back to YouTube Music, then to YouTube playlists and videos. Paste a YouTube link to import unofficial music; full-album videos are split by chapter.
 - **Library** lists what you have. Select albums to delete them, retry incomplete ones, edit tags and covers, or link a YouTube video for a missing track. **Scan library** looks up missing lyrics or covers for every album in the background.
 - **Lyrics** are looked up on [LRCLIB](https://lrclib.net) during each download and saved next to the song as a `.lrc` file. Existing `.lrc` files are kept.
+- **Export** copies albums (selected ones, or everything from **Tools**) to a folder such as an MP3 player, skipping files that are already there with the same checksum. Copying straight to a folder needs Chrome or Edge on `https` or `localhost`; elsewhere AlbumDL compares the player's folder and downloads a ZIP of only what is new.
 - **Queue** shows progress and **Log** shows the server log.
 
 ## Where data comes from
