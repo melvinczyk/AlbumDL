@@ -295,10 +295,16 @@ class JobManager:
                 self.events.emit("info", "queue", f"discography: skipped {g['title']} (already in the folder)")
                 continue
             try:
-                editions = mb.group_editions(g["id"])
-                if not editions:
-                    raise RuntimeError("no releases listed")
-                self.submit(mb.get_release(editions[0]["id"]))
+                release = g.get("release")
+                if not release:
+                    editions = mb.group_editions(g["id"])
+                    if not editions:
+                        raise RuntimeError("no releases listed")
+                    release = editions[0]["id"]
+                album = mb.get_release(release)
+                if g.get("release") and album.edition and album.edition.lower() not in album.title.lower():
+                    album.title = f"{album.title} ({album.edition})"
+                self.submit(album)
                 batch.queued += 1
             except BaseException as exc:
                 batch.failed += 1

@@ -250,3 +250,9 @@ nav button { transition: background .2s, color .2s; }
 .trow .sz { padding: 0; text-align: right; }
 @media (max-width: 720px) { .imp { grid-template-columns: 1fr; } }
 #artistBar .sub { margin: 10px 4px 6px; }
+
+.actions { flex-wrap: wrap; }
+.actions.tall { border-radius: 24px; }
+#edRow { flex: 1 0 100%; display: flex; align-items: center; gap: 10px; padding: 0 8px 2px 0; }
+#edRow span { color: var(--c2); font: 700 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+#edSel { flex: 1; min-width: 0; min-height: 36px; padding: 0 12px; border-radius: 999px; background: var(--p); color: var(--w); border: 2px solid var(--line); font: 13px var(--sans); }

@@ -132,6 +132,7 @@ class Album:
     script: str = ""
     asin: str = ""
     cover_url: str = ""
+    edition: str = ""
     tracks: List[Track] = field(default_factory=list)
 
     @property
@@ -275,7 +276,7 @@ def get_release(mbid: str) -> Album:
         media_format=(r.get("media") or [{}])[0].get("format") or "",
         language=r.get("text-representation", {}).get("language") or "",
         script=r.get("text-representation", {}).get("script") or "",
-        asin=r.get("asin") or "",
+        asin=r.get("asin") or "", edition=r.get("disambiguation") or "",
     )
     for medium in r.get("media", []):
         disc = medium.get("position", 1)

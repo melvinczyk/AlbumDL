@@ -192,9 +192,26 @@ function renderResults() {
   fresh = false; drawActions();
 }
 const libSel = new Map(), lkey = a => a.artist + '\u0000' + a.title;
+const edCache = new Map();
+const edKey = e => [e.title, e.tracks, e.disambiguation, (e.date || '').slice(0, 4)].join('|').toLowerCase();
+const edLabel = e => [e.title, e.disambiguation, e.tracks + ' tracks', (e.date || '').slice(0, 4), e.format].filter(Boolean).join(' · ');
+async function drawEditions() {
+  const row = $('#edRow'), one = selected.size === 1 && view === 'search' ? [...selected.values()][0] : null;
+  const hide = () => { row.hidden = true; $('#actions').classList.remove('tall'); };
+  if (!one || one.ytm) return hide();
+  if (!edCache.has(one.id)) edCache.set(one.id, api('/api/group/' + one.id).then(d => d.editions).catch(() => []));
+  const eds = await edCache.get(one.id);
+  if (selected.size !== 1 || !selected.has(one.id)) return;
+  const seen = new Set(eds[0] ? [edKey(eds[0])] : []), more = eds.slice(1).filter(e => !seen.has(edKey(e)) && seen.add(edKey(e))).slice(0, 15);
+  if (!more.length) return hide();
+  fill($('#edSel'), el('option', { value: '', text: 'Standard · ' + edLabel(eds[0]) }), more.map(e => el('option', { value: e.id, text: edLabel(e), selected: e.id === one.release })));
+  $('#edSel').onchange = ev => { one.release = ev.target.value || undefined; };
+  row.hidden = false; $('#actions').classList.add('tall');
+}
 function drawActions() {
   const lib_ = view === 'library', n = lib_ ? libSel.size : selected.size;
   $('#actions').hidden = !n || (view !== 'search' && !lib_);
+  drawEditions();
   $('#dlBtn').hidden = lib_; $('#retryBtn').hidden = !(lib_ && [...libSel.values()].some(a => a.incomplete));
   if (lib_) {
     $('#actionText').textContent = `${n === 1 ? '1 album' : n + ' albums'} · ${bytes([...libSel.values()].reduce((t, a) => t + a.size, 0))}`;
