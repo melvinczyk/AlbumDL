@@ -2,69 +2,68 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>AlbumDL</title>
 <link rel="icon" type="image/png" href="/static/img/fav.png">
 <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
-<img id="bg" src="/static/img/bg.gif" alt="">
+<picture id="bg">
+  <source media="(max-width: 720px), (prefers-reduced-motion: reduce)" srcset="/static/img/bg.png">
+  <img src="/static/img/bg.gif" alt="">
+</picture>
+<div id="veil"></div>
 <div id="toasts" aria-live="polite"></div>
 
 <div class="wrap">
   <header class="top">
-    <div class="brand"><img class="t" src="/static/img/fav.png" alt=""><img class="l" src="/static/img/logo.png" alt="albumdl"></div>
-    <div class="status" id="status" title="Live status">
-      <i class="led warn" id="led"></i><b id="sMain">Connecting…</b>
-      <span id="sTracks"></span><span id="sWritten"></span><span id="sDisk"></span>
-    </div>
+    <div class="brand"><img class="t" src="/static/img/fav.png" alt=""><img class="l" src="/static/img/logo.png" alt="AlbumDL"></div>
+    <button class="pill" id="pill" type="button" data-view="queue"><i class="led" id="led"></i><span id="pillText">Idle</span></button>
   </header>
 
-  <nav role="tablist">
-    <button role="tab" data-view="discover" aria-selected="true"><span class="pi search"></span>Discover</button>
-    <button role="tab" data-view="queue" aria-selected="false"><span class="pi download"></span>Queue <span class="badge blue" id="bQueue" hidden>0</span></button>
-    <button role="tab" data-view="console" aria-selected="false"><span class="pi console"></span>Console <span class="badge" id="bLog" hidden>0</span></button>
+  <nav id="nav">
+    <button data-view="search" aria-selected="true"><span class="pi search"></span><b>Search</b></button>
+    <button data-view="queue" aria-selected="false"><span class="pi download"></span><b>Queue</b><em class="badge" id="bQueue" hidden>0</em></button>
+    <button data-view="log" aria-selected="false"><span class="pi console"></span><b>Log</b><em class="badge bad" id="bLog" hidden>0</em></button>
   </nav>
 
-  <main class="view active" id="v-discover">
-    <form class="panel" id="searchForm" autocomplete="off">
-      <div class="search">
-        <label>Artist<input type="text" id="artist"></label>
-        <label>Album<input type="text" id="album" placeholder="optional, or paste a MusicBrainz link"></label>
-        <button class="btn go" id="searchBtn" type="submit"><span class="pi search k"></span>Search</button>
-      </div>
+  <main class="view active" id="v-search">
+    <form class="find" id="searchForm" autocomplete="off">
+      <span class="pi search c"></span>
+      <input type="text" id="q" placeholder="Artist, or Artist - Album" enterkeyhint="search" aria-label="Search">
+      <button class="btn go" id="searchBtn" type="submit">Search</button>
     </form>
-    <div id="searchMsg" style="margin-top:12px"></div>
-    <div class="stack" style="margin-top:14px">
-      <div id="artistInfo"></div>
-      <div id="results"></div>
-      <div id="detail"></div>
-    </div>
+    <div id="artistBar"></div>
+    <div id="similar"></div>
+    <div id="results"></div>
   </main>
 
   <main class="view" id="v-queue">
-    <div class="head"><h2>Downloads</h2><span class="counts" id="queueCounts"></span><button class="btn sm push" id="clearBtn" type="button">Clear finished</button></div>
-    <div id="batches" class="stack" style="margin-top:14px"></div>
-    <div class="jobgrid" id="jobs"></div>
-    <div id="jobDetail" style="margin-top:14px"></div>
+    <div id="batches"></div>
+    <div id="jobs"></div>
+    <p class="foot" id="stats"></p>
+    <div id="report"></div>
+    <p class="foot"><button class="btn sm ghost" id="incBtn" type="button">Check incomplete</button> <button class="btn sm ghost" id="coversBtn" type="button">Find missing covers</button></p>
   </main>
 
-  <main class="view" id="v-console">
-    <div class="panel">
-      <div class="row" style="margin-bottom:10px">
-        <span id="lvls" class="row" style="gap:5px"></span>
-        <select id="fSrc" aria-label="Source"><option value="">All sources</option></select>
-        <input type="text" id="fText" placeholder="Filter…" style="min-width:150px">
-        <span class="counts" id="logCounts" style="margin-left:auto"></span>
-        <button class="btn sm ghost" id="followBtn" type="button">Following</button>
-        <button class="btn sm ghost" id="copyBtn" type="button">Copy</button>
-        <button class="btn sm ghost" id="saveBtn" type="button">Save</button>
-        <button class="btn sm bad" id="wipeBtn" type="button">Clear</button>
-      </div>
-      <div id="term" role="log" aria-live="off" tabindex="0"></div>
+  <main class="view" id="v-log">
+    <div class="logbar">
+      <div class="seg" id="lvls"></div>
+      <input type="text" id="fText" placeholder="Filter" aria-label="Filter log">
+      <button class="btn sm ghost" id="copyBtn" type="button">Copy</button>
+      <button class="btn sm ghost" id="wipeBtn" type="button">Clear</button>
     </div>
+    <div id="term" role="log" aria-live="off" tabindex="0"></div>
+    <button class="btn sm hot" id="latestBtn" type="button" hidden>Latest</button>
   </main>
+</div>
+
+<div class="actions" id="actions" hidden>
+  <span id="actionText"></span>
+  <button class="btn ghost" id="clearSel" type="button">Clear</button>
+  <button class="btn ghost danger" id="delBtn" type="button" hidden>Delete</button>
+  <button class="btn go" id="dlBtn" type="button"><span class="pi download k"></span><span id="dlLabel">Download</span></button>
 </div>
 
 <script src="/static/js/app.js"></script>

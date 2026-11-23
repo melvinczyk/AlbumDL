@@ -1,9 +1,11 @@
 import difflib
 import io
+import os
+import re
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import requests
 
@@ -118,43 +120,85 @@ def _fetch(url: str, tries: int = 3, timeout: int = 25) -> Optional[bytes]:
     return None
 
 
-def _itunes(artist: str, title: str, size: int = 3000, tries: int = 3) -> Optional[bytes]:
+def _clean(s: str) -> str:
+    return re.sub(r"\s*[\(\[].*?[\)\]]", "", s or "").strip() or (s or "")
+
+
+def _same(artist: str, title: str, got_artist: str, got_title: str) -> bool:
+    want = f"{_clean(artist)} {_clean(title)}".lower()
+    got = f"{got_artist} {_clean(got_title)}".lower()
+    return difflib.SequenceMatcher(None, want, got).ratio() >= 0.6
+
+
+def _search(url: str, params: dict) -> list:
     try:
-        r = requests.get("https://itunes.apple.com/search", timeout=15,
-                         params={"term": f"{artist} {title}", "entity": "album", "limit": 5})
-        results = r.json().get("results", [])
+        return requests.get(url, params=params, timeout=15, headers={"User-Agent": UA}).json().get("results", [])
+    except (requests.RequestException, ValueError):
+        return []
+
+
+def _itunes(artist: str, title: str, size: int = 3000, tries: int = 3) -> Optional[bytes]:
+    for term in dict.fromkeys((f"{artist} {title}", f"{artist} {_clean(title)}")):
+        for res in _search("https://itunes.apple.com/search", {"term": term, "entity": "album", "limit": 8}):
+            if res.get("artworkUrl100") and _same(artist, title, res.get("artistName", ""), res.get("collectionName", "")):
+                data = _fetch(res["artworkUrl100"].replace("100x100bb", f"{size}x{size}bb"), tries)
+                if data:
+                    return data
+    return None
+
+
+def _deezer(artist: str, title: str, size: int = 1000, tries: int = 3) -> Optional[bytes]:
+    try:
+        rows = requests.get("https://api.deezer.com/search/album", timeout=15,
+                            params={"q": f'artist:"{artist}" album:"{_clean(title)}"', "limit": 8}).json().get("data", [])
     except (requests.RequestException, ValueError):
         return None
-    want = f"{artist} {title}".lower()
-    for res in results:
-        got = f"{res.get('artistName', '')} {res.get('collectionName', '')}".lower()
-        if difflib.SequenceMatcher(None, want, got).ratio() >= 0.6 and res.get("artworkUrl100"):
-            data = _fetch(res["artworkUrl100"].replace("100x100bb", f"{size}x{size}bb"), tries)
+    key = "cover_xl" if size > 500 else "cover_big"
+    for res in rows:
+        if res.get(key) and _same(artist, title, (res.get("artist") or {}).get("name", ""), res.get("title", "")):
+            data = _fetch(res[key], tries)
             if data:
                 return data
     return None
 
 
-def fetch_cover(album: Album) -> Optional[bytes]:
+def _ytmusic(artist: str, title: str, size: int = 1200) -> Optional[bytes]:
+    try:
+        from ytmusicapi import YTMusic
+        for res in YTMusic().search(f"{artist} {_clean(title)}", filter="albums", limit=6):
+            thumbs = res.get("thumbnails") or []
+            if thumbs and _same(artist, title, " ".join(a["name"] for a in res.get("artists", [])), res.get("title", "")):
+                data = _fetch(re.sub(r"=w\d+-h\d+.*$", f"=w{size}-h{size}", thumbs[-1]["url"]), 2)
+                if data:
+                    return data
+    except Exception:
+        pass
+    return None
+
+
+def fetch_cover(album: Album) -> Tuple[Optional[bytes], str]:
     def caa(kind: str, mid: str) -> Optional[bytes]:
         return _fetch(f"https://coverartarchive.org/{kind}/{mid}/front")
 
-
-    pool = ThreadPoolExecutor(max_workers=3)
-    rel = pool.submit(caa, "release", album.mbid)
-    grp = pool.submit(caa, "release-group", album.group_id) if album.group_id else None
-    itn = pool.submit(_itunes, album.artist, album.title)
-    first = rel.result() or (grp.result() if grp else None)
-    found = [d for d in (first, itn.result()) if d]
-    pool.shutdown(wait=False)
+    jobs = {"Cover Art Archive": lambda: caa("release", album.mbid) if album.mbid else None,
+            "Cover Art Archive (group)": lambda: caa("release-group", album.group_id) if album.group_id else None,
+            "iTunes": lambda: _itunes(album.artist, album.title),
+            "Deezer": lambda: _deezer(album.artist, album.title)}
+    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+        futures = {name: pool.submit(fn) for name, fn in jobs.items()}
+        found = {name: f.result() for name, f in futures.items() if f.result()}
     if not found:
-        return None
+        data = _ytmusic(album.artist, album.title)
+        found = {"YouTube Music": data} if data else {}
+    if not found:
+        return None, ""
     from PIL import Image
 
     def area(d: bytes) -> int:
         w, h = Image.open(io.BytesIO(d)).size
         return w * h
-    return to_jpeg(max(found, key=area))
+    name = max(found, key=lambda n: area(found[n]))
+    return to_jpeg(found[name]), name
 
 
 def to_jpeg(data: bytes, max_side: Optional[int] = None) -> bytes:
@@ -185,8 +229,50 @@ def cover_for(release: str, group: str, artist: str, title: str, size: int) -> O
         if mbid and not data:
             data = _fetch(f"https://coverartarchive.org/{kind}/{mbid}/front-{size}", tries=1, timeout=8)
     if not data and artist and title:
-        data = _itunes(artist, title, size, tries=1)
+        data = _itunes(artist, title, size, tries=1) or _deezer(artist, title, size, tries=1)
     if len(_covers) > 400:
         _covers.pop(next(iter(_covers)))
     _covers[key] = (time.time(), data)
     return data
+
+
+def fix_covers(out_root: str, log) -> None:
+    from mutagen.id3 import APIC, ID3
+    fixed = missing = 0
+    for artist in sorted(os.scandir(out_root), key=lambda e: e.name.lower()):
+        if not artist.is_dir() or artist.name.startswith("."):
+            continue
+        for alb in sorted(os.scandir(artist.path), key=lambda e: e.name.lower()):
+            songs = sorted(f.path for f in os.scandir(alb.path) if f.name.lower().endswith(".mp3") and not f.name.startswith(".")) if alb.is_dir() and not alb.name.startswith(".") else []
+            jpg = os.path.join(alb.path, "cover.jpg")
+            if not songs or os.path.exists(jpg):
+                continue
+            try:
+                id3 = ID3(songs[0])
+                txx = {f.desc: str(f.text[0]) for f in id3.getall("TXXX") if f.text}
+                name = str((id3.get("TPE2") or id3.get("TPE1") or [artist.name])[0])
+                album = Album(mbid=txx.get("MusicBrainz Album Id", ""), group_id=txx.get("MusicBrainz Release Group Id", ""),
+                              title=str((id3.get("TALB") or [alb.name])[0]), artist=name, artists=[name], artist_ids=[])
+                data, source = fetch_cover(album)
+            except Exception as exc:
+                log("warn", f"{artist.name} - {alb.name}: {str(exc)[:100]}")
+                continue
+            if not data:
+                missing += 1
+                log("warn", f"no cover found anywhere: {artist.name} - {alb.name}")
+                continue
+            with open(jpg + ".part", "wb") as f:
+                f.write(data)
+            os.replace(jpg + ".part", jpg)
+            small = to_jpeg(data, max_side=1400)
+            for path in songs:
+                try:
+                    tags = ID3(path)
+                    if not tags.getall("APIC"):
+                        tags.add(APIC(encoding=3, mime="image/jpeg", type=3, desc="Front Cover", data=small))
+                        tags.save(path, v1=2, v2_version=3)
+                except Exception:
+                    pass
+            fixed += 1
+            log("ok", f"cover added from {source}: {artist.name} - {alb.name}")
+    log("ok" if not missing else "warn", f"covers done: {fixed} added, {missing} still missing")

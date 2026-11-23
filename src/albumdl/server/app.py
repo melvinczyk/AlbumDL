@@ -2,6 +2,7 @@ import functools
 import os
 import re
 import shutil
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
@@ -15,6 +16,7 @@ from starlette.exceptions import HTTPException
 
 from ..media import pipeline, tagging
 from ..sources import musicbrainz as mb
+from ..sources.similar import artist_photo, similar_artists
 from .jobs import FINISHED, EventLog, JobManager, Library
 
 WEB = Path(__file__).parent.parent / "web"
@@ -148,6 +150,17 @@ def create_app(settings: Settings) -> FastAPI:
             r["owned"] = library.owned_album(r["artist"], r["title"])
         return {"albums": albums}
 
+    @app.get("/api/similar/{aid}")
+    def similar(aid: MbId, name: str = ""):
+        return {"artists": [dict(a, owned=library.has_artist(a["name"])) for a in similar_artists(aid, name[:120])]}
+
+    @app.get("/api/artist-img")
+    def artist_img(name: str = ""):
+        data = artist_photo(name.strip()[:120]) if name.strip() else None
+        if not data:
+            raise HTTPException(404, "no photo")
+        return Response(data, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
+
     @app.get("/api/group/{gid}")
     @guarded
     def group(gid: MbId):
@@ -192,7 +205,60 @@ def create_app(settings: Settings) -> FastAPI:
         if not groups or not all(re.fullmatch(MBID, g["id"]) for g in groups):
             raise HTTPException(400, "nothing valid to download")
         name = str(body.get("name") or groups[0]["artist"])[:120]
-        return {"batch": jobs.discography(name, groups, bool(body.get("skip_owned", True))).summary()}
+        queued = jobs.active_groups()
+        fresh = [g for g in groups if g["id"] not in queued]
+        if not fresh:
+            return {"batch": None, "duplicates": len(groups)}
+        return {"batch": jobs.discography(name, fresh, bool(body.get("skip_owned", True))).summary(), "duplicates": len(groups) - len(fresh)}
+
+    @app.get("/api/library/incomplete")
+    def incomplete():
+        return {"albums": library.incomplete_albums()}
+
+    @app.post("/api/library/retry-incomplete")
+    @guarded
+    def retry_incomplete():
+        groups, queued = [], jobs.active_groups()
+        for row in library.incomplete_albums():
+            gid = row["group_id"]
+            if not gid:
+                found = mb.search_albums(row["artist"], row["title"], limit=5)
+                gid = found[0]["id"] if found else ""
+            if gid and gid not in queued:
+                groups.append({"id": gid, "title": row["title"], "artist": row["artist"]})
+        if groups:
+            jobs.discography("Incomplete albums", groups, False)
+        return {"queued": len(groups)}
+
+    @app.post("/api/library/delete")
+    def delete_albums(body: dict = Body(...)):
+        albums = [(str(a.get("artist", "")), str(a.get("title", ""))) for a in body.get("albums", []) if isinstance(a, dict)][:150]
+        busy = {(pipeline.safe(j.album.artist), pipeline.safe(j.album.title)) for j in jobs.listing() if j.status in ("queued", "running")}
+        deleted = skipped = 0
+        for artist, title in albums:
+            if (pipeline.safe(artist), pipeline.safe(title)) in busy:
+                skipped += 1
+            elif library.remove_album(artist, title):
+                deleted += 1
+                events.emit("warn", "library", f"deleted {artist} - {title}")
+        return {"deleted": deleted, "skipped": skipped}
+
+    covers = {"running": False}
+
+    @app.post("/api/library/covers")
+    def find_covers():
+        if covers["running"]:
+            raise HTTPException(409, "already searching for covers")
+        covers["running"] = True
+
+        def run():
+            events.emit("info", "covers", "looking for albums without cover.jpg")
+            try:
+                tagging.fix_covers(settings.out_root, lambda level, msg: events.emit(level, "covers", msg))
+            finally:
+                covers["running"] = False
+        threading.Thread(target=run, daemon=True).start()
+        return {"started": True}
 
     @app.post("/api/batches/{bid}/cancel")
     def cancel_batch(bid: JobId):

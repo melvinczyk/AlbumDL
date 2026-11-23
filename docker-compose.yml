@@ -10,3 +10,4 @@ services:
     environment:
       ALBUMDL_JOBS: 4
       ALBUMDL_CONTACT: ${CONTACT:-}
+      ALBUMDL_LASTFM: ${LASTFM_KEY:-}

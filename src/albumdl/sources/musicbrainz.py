@@ -248,9 +248,9 @@ def get_release(mbid: str) -> Album:
     album = Album(
         mbid=r["id"], group_id=group.get("id", ""), title=r["title"],
         artist=text, artists=names, artist_ids=ids,
-        date=r.get("date", ""), original_date=group.get("first-release-date", ""),
-        country=r.get("country", ""), status=r.get("status", ""),
-        type=group.get("primary-type", ""), label=label, catalog=catalog,
+        date=r.get("date") or "", original_date=group.get("first-release-date") or "",
+        country=r.get("country") or "", status=r.get("status") or "",
+        type=group.get("primary-type") or "", label=label, catalog=catalog,
         barcode=r.get("barcode") or "", genres=genres,
         compilation="Compilation" in secondary or text == "Various Artists",
         disc_total=len(r.get("media", [])) or 1,

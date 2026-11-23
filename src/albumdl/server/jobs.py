@@ -1,5 +1,7 @@
 import collections
+import difflib
 import os
+import shutil
 import queue
 import re
 import threading
@@ -71,12 +73,22 @@ class Library:
         self._cache[path] = (time.time(), names)
         return names
 
+    def _find(self, path: str, name: str) -> Optional[str]:
+        names, key = self._subfolders(path), _key(pipeline.safe(name))
+        if key in names:
+            return names[key]
+        close = difflib.get_close_matches(key, names, n=1, cutoff=0.88) if len(key) > 4 else []
+        return names[close[0]] if close else None
+
+    def has_artist(self, name: str) -> bool:
+        return self._find(self.out_root, name) is not None
+
     def owned_album(self, artist: str, title: str) -> Optional[dict]:
-        artist_dir = self._subfolders(self.out_root).get(_key(pipeline.safe(artist)))
+        artist_dir = self._find(self.out_root, artist)
         if not artist_dir:
             return None
         path = os.path.join(self.out_root, artist_dir)
-        album_dir = self._subfolders(path).get(_key(pipeline.safe(title)))
+        album_dir = self._find(path, title)
         if not album_dir:
             return None
         tracks = size = 0
@@ -89,6 +101,44 @@ class Library:
             return None
         incomplete = os.path.exists(os.path.join(path, album_dir, pipeline.INCOMPLETE))
         return {"tracks": tracks, "size": size, "incomplete": incomplete} if tracks else None
+
+    def remove_album(self, artist: str, title: str) -> bool:
+        artist_dir = self._find(self.out_root, artist)
+        album_dir = artist_dir and self._find(os.path.join(self.out_root, artist_dir), title)
+        if not album_dir:
+            return False
+        shutil.rmtree(os.path.join(self.out_root, artist_dir, album_dir))
+        try:
+            os.rmdir(os.path.join(self.out_root, artist_dir))
+        except OSError:
+            pass
+        self.refresh()
+        return True
+
+    def incomplete_albums(self) -> List[dict]:
+        from mutagen.id3 import ID3
+        out = []
+        for artist in sorted(self._subfolders(self.out_root).values(), key=str.lower):
+            apath = os.path.join(self.out_root, artist)
+            for album in sorted(self._subfolders(apath).values(), key=str.lower):
+                marker = os.path.join(apath, album, pipeline.INCOMPLETE)
+                if not os.path.exists(marker):
+                    continue
+                with open(marker, encoding="utf-8", errors="replace") as f:
+                    parts = f.read().split("\n\n")
+                row = {"artist": artist, "title": album, "group_id": "",
+                       "missing": [l for l in (parts[1].split("\n") if len(parts) > 1 else []) if l.strip()]}
+                songs = sorted(f.path for f in os.scandir(os.path.join(apath, album)) if f.name.lower().endswith(".mp3") and not f.name.startswith("."))
+                if songs:
+                    try:
+                        id3 = ID3(songs[0])
+                        row["group_id"] = next((str(f.text[0]) for f in id3.getall("TXXX") if f.desc == "MusicBrainz Release Group Id" and f.text), "")
+                        row["artist"] = str((id3.get("TPE2") or [artist])[0])
+                        row["title"] = str((id3.get("TALB") or [album])[0])
+                    except Exception:
+                        pass
+                out.append(row)
+        return out
 
 
 class Job:
@@ -115,7 +165,8 @@ class Job:
              "error": self.error, "started": self.started,
              "elapsed": round(end - self.started, 1) if self.started else 0,
              "bytes": sum(t.get("out_bytes") or 0 for t in tr if t["state"] == "done"),
-             "retries": sum(max(0, (t.get("attempts") or 1) - 1) for t in tr)}
+             "retries": sum(max(0, (t.get("attempts") or 1) - 1) for t in tr),
+             "src_kbps": round(sum(k) / len(k)) if (k := [t["src_kbps"] for t in tr if t["state"] == "done" and t.get("src_kbps")]) else 0}
         if full:
             d["tracks"] = list(self.tracks.values())
             d["log"] = self.log[-400:]
@@ -159,6 +210,10 @@ class JobManager:
         self.pending.put(job)
         self.events.emit("info", "queue", f"queued: {album.artist} - {album.title}", job.id)
         return job
+
+    def active_groups(self) -> set:
+        with self.lock:
+            return {j.album.group_id for j in self.jobs.values() if j.status in ("queued", "running")}
 
     def listing(self) -> List[Job]:
         with self.lock:

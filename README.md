@@ -1,6 +1,6 @@
 # AlbumDL
 
-AlbumDL is a webserver that allows you to download official music from YouTube Music without an account. It is meant to run on servers for quick downloading and catalouging.
+AlbumDL is a webserver that allows you to download albums from YouTube Music without an account. It is meant to run on servers for quick downloading and catalouging.
 
 It uses MusicBrainz public database to find metadata about songs and for grabbing the cover art.
 
@@ -32,8 +32,13 @@ OUTPUT_DIR=./out .venv/bin/albumdl
 
 ## How to use
 
-- Search an artist to see their albums, or an artist and album to find one release. You can also paste a MusicBrainz link.
+- Search an artist to see their albums, or type `Artist - Album` to find one release. You can also paste a MusicBrainz link.
+- Artist pages show **Similar** artists. Tap one to open it. Artists you already have a folder for get a check mark, and artist photos come from Deezer. Add `LASTFM_KEY=<your key>` to `.env` to use Last.fm (a free API key from last.fm/api); without it the list comes from ListenBrainz.
 - Albums already in the folder are marked **In folder**.
-- Tick the box on any album, EP or single and press **Download selected**, or press **Download discography** on an artist page to queue everything shown. Downloading an album that is already there replaces it.
+- Tap albums, EPs or singles to select them (or **Select all** for a discography), then press **Download**. Downloading an album that is already there replaces it.
+- Select albums marked **In folder** and press **Delete** (twice, to confirm) to remove their folders from disk. Navidrome keeps deleted albums as empty "missing" entries until you remove them in its Missing Files page, or set `ND_SCANNER_PURGEMISSING=full` on the Navidrome container.
+- **Find missing covers** (bottom of the Queue) scans the music folder for albums without a `cover.jpg`, looks the cover up again and embeds it. Results are in the Log. Navidrome shows the new covers after its next scan.
+- **Check incomplete** (bottom of the Queue) lists albums with missing tracks and can retry them all. Albums already queued are skipped, and folders with a slightly different name still count as **In folder**.
 - If a track still fails after many retries, the album folder gets an `INCOMPLETE.txt` listing what is missing, and the album is tagged **Incomplete**.
-- `Queue` shows progress and `Console` shows the log.
+- `Queue` shows progress, with the tracks of each album inside its row. `Log` shows the server log.
+- If no official upload exists for a track, the best matching upload is used and marked **Unofficial upload** in the queue.

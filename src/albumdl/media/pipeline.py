@@ -92,14 +92,14 @@ def run(album: mb.Album, opts: Options, log: Callable[[str], None] = print,
     def get_cover() -> bytes:
         path = os.path.join(folder, "cover.jpg")
         try:
-            data = tagging.fetch_cover(album)
+            data, source = tagging.fetch_cover(album)
             if data:
                 with open(path + ".part", "wb") as f:
                     f.write(data)
                 os.replace(path + ".part", path)
             elif os.path.exists(path):
                 data = open(path, "rb").read()
-            say("cover: " + (f"{len(data) // 1024} KB" if data else "not found"))
+            say("cover: " + (f"{len(data) // 1024} KB from {source}" if source else "kept the existing one" if data else "not found on any source"))
             return tagging.to_jpeg(data, max_side=1400) if data else b""
         except Exception as exc:
             say(f"cover failed: {str(exc)[:100]}")
@@ -119,19 +119,19 @@ def run(album: mb.Album, opts: Options, log: Callable[[str], None] = print,
             log(f"no album playlist ({str(exc)[:120]}), searching per track")
 
         def attempt(i: int, t: mb.Track, n: int) -> bool:
-            note(i, "working", "finding official source", attempts=n)
+            note(i, "working", "finding source", attempts=n)
             t0 = time.time()
             entry, why = None, "official YouTube Music album playlist"
             if playlist:
-                entry = youtube.match_playlist(t, playlist, i)
+                entry = youtube.match_playlist(t, playlist, i, album)
             if entry is None:
                 hit = youtube.search_official(t, album)
                 entry, why = hit if hit else (None, "")
             t_find = time.time() - t0
             if entry is None:
                 reason = youtube.NOTES.get(t.track_id)
-                say(f"[{i}/{total}] NO OFFICIAL SOURCE FOUND: {t.title}" + (f" ({reason})" if reason else ""))
-                note(i, "failed", "no official source found" + (f" ({reason})" if reason else ""), t_find=t_find, attempts=n)
+                say(f"[{i}/{total}] NO SOURCE FOUND: {t.title}" + (f" ({reason})" if reason else ""))
+                note(i, "failed", "no source found" + (f" ({reason})" if reason else ""), t_find=t_find, attempts=n)
                 return False
             who = entry.get("channel") or entry.get("uploader") or "?"
             url = youtube.entry_url(entry)

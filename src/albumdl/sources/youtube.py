@@ -12,12 +12,14 @@ from .musicbrainz import Album, Track
 
 BAD_WORDS = ("live", "remix", "cover", "karaoke", "instrumental", "sped up",
              "slowed", "reverb", "8d", "nightcore", "reaction", "tutorial",
-             "mashup", "acoustic", "demo", "tribute", "piano version")
+             "mashup", "acoustic", "demo", "tribute", "piano version",
+             "full album", "full ep", "full demo", "full length")
 
 
 VERSION_WORDS = ("demo", "live", "remix", "acoustic", "instrumental", "extended",
                  "edit", "reprise", "excerpt", "excerpts", "single", "radio",
                  "mix", "session", "karaoke", "cover")
+SOFT = {"demo"}
 MIN_SCORE = 45
 MAX_DURATION_DIFF = 10
 
@@ -46,9 +48,9 @@ def version_words(title: str) -> set:
     return {w for w in VERSION_WORDS if re.search(rf"\b{re.escape(w)}\b", low)}
 
 
-def title_matches(candidate: str, wanted: str) -> bool:
+def title_matches(candidate: str, wanted: str, album_title: str = "", loose: bool = False) -> bool:
     tt, ct = core(wanted), core(candidate)
-    if not tt or not ct or version_words(candidate) != version_words(wanted):
+    if not tt or not ct or version_words(candidate) - version_words(album_title) - (SOFT if loose else set()) != version_words(wanted):
         return False
     return (tt == ct or difflib.SequenceMatcher(None, tt, ct).ratio() >= 0.85
             or re.search(rf"\b{re.escape(tt)}\b", ct) is not None)
@@ -89,7 +91,7 @@ def find_album_playlist(album: Album) -> Optional[str]:
     return f"https://www.youtube.com/playlist?list={best[1]}" if best else None
 
 
-def score(entry: dict, track: Track, album: Album) -> float:
+def score(entry: dict, track: Track, album: Album, loose: bool = False) -> float:
     title = entry.get("title") or ""
     channel = entry.get("channel") or entry.get("uploader") or ""
     expected = f"{track.title} {album.title}".lower()
@@ -102,14 +104,14 @@ def score(entry: dict, track: Track, album: Album) -> float:
         s += 50 if d <= 2 else 30 if d <= 5 else 5
     if channel.endswith("- Topic"):
         s += 40
-    if any(core(a) and core(a) in core(channel) for a in track.artists):
+    if any(core(a) and core(a) in core(f"{channel} {title}") for a in track.artists):
         s += 15
     tt, ct = core(track.title), core(title)
     if tt:
         s += 30 if tt in ct else 30 * difflib.SequenceMatcher(None, tt, ct).ratio()
     low = title.lower()
     for w in BAD_WORDS:
-        if re.search(rf"\b{re.escape(w)}\b", low) and w not in expected:
+        if re.search(rf"\b{re.escape(w)}\b", low) and w not in expected and not (loose and w in SOFT):
             s -= 60
     if tt and tt == ct:
         s += 10
@@ -122,9 +124,14 @@ def score(entry: dict, track: Track, album: Album) -> float:
     return s
 
 
-def bad_version(title: str, track: Track, album: Album) -> bool:
+def by_artist(entry: dict, track: Track, album: Album) -> bool:
+    text = core(f"{entry.get('channel') or entry.get('uploader') or ''} {entry.get('title') or ''}")
+    return any(core(a) and core(a) in text for a in track.artists + [album.artist])
+
+
+def bad_version(title: str, track: Track, album: Album, loose: bool = False) -> bool:
     low, expected = title.lower(), f"{track.title} {album.title}".lower()
-    return any(re.search(rf"\b{re.escape(w)}\b", low) and w not in expected
+    return any(re.search(rf"\b{re.escape(w)}\b", low) and w not in expected and not (loose and w in SOFT)
                for w in BAD_WORDS)
 
 
@@ -152,7 +159,19 @@ def official_reason(info: dict, track: Track, album: Album) -> Optional[str]:
     return None
 
 
+_infos: dict = {}
+
+
 def video_info(entry: dict) -> Optional[dict]:
+    if entry.get("id") in _infos:
+        return _infos[entry["id"]]
+    info = _video_info(entry)
+    if info and len(_infos) < 500:
+        _infos[entry["id"]] = info
+    return info
+
+
+def _video_info(entry: dict) -> Optional[dict]:
     for attempt in range(2):
         for extra in ({}, {"extractor_args": {"youtube": {"player_client": ["web_embedded"]}}}):
             try:
@@ -164,10 +183,10 @@ def video_info(entry: dict) -> Optional[dict]:
     return None
 
 
-def match_playlist(track: Track, entries: List[dict], index: int) -> Optional[dict]:
+def match_playlist(track: Track, entries: List[dict], index: int, album: Album) -> Optional[dict]:
     best = None
     for e in entries:
-        if not title_matches(e.get("title") or "", track.title):
+        if not title_matches(e.get("title") or "", track.title, album.title):
             continue
         ratio = difflib.SequenceMatcher(None, core(track.title), core(e["title"])).ratio()
         dur = e.get("duration")
@@ -180,39 +199,61 @@ def match_playlist(track: Track, entries: List[dict], index: int) -> Optional[di
 
 def search_official(track: Track, album: Album) -> Optional[Tuple[dict, str]]:
     artist = track.artists[0]
-    queries = [f"{artist} {track.title} {album.title}", f"{artist} {track.title} official audio", f"{artist} - Topic {track.title}"]
-    seen, unchecked, fallback = set(), 0, None
-    for q in queries:
+    queries = [f"{artist} {track.title} {album.title}", f"{artist} {track.title} official audio",
+               f"{artist} - Topic {track.title}", f"{artist} - {track.title}"]
+    seen, pool = set(), []
+    found = {"official": None, "unofficial": None, "unchecked": 0}
+
+    def scan(entries: List[dict], loose: bool):
         ranked = []
-        for e in search(q):
-            if e.get("id") in seen:
-                continue
-            seen.add(e.get("id"))
-            sc = score(e, track, album)
+        for e in entries:
+            sc = score(e, track, album, loose)
             if sc < MIN_SCORE:
                 continue
             title = e.get("title") or ""
-            if title_matches(title, track.title) or (
+            if title_matches(title, track.title, album.title, loose) or (
                     (e.get("channel") or e.get("uploader")) and re.search(rf"\b{re.escape(core(track.title))}\b", core(title))
-                    and version_words(title) == version_words(track.title)):
+                    and version_words(title) - version_words(album.title) - (SOFT if loose else set()) == version_words(track.title)):
                 ranked.append((sc, e))
         for sc, e in sorted(ranked, key=lambda x: -x[0])[:4]:
             info = video_info(e)
             if info is None:
-                unchecked += 1
+                found["unchecked"] += 1
                 continue
             dur = info.get("duration")
             if track.length_ms and dur and abs(dur - track.length_ms / 1000) > MAX_DURATION_DIFF:
                 continue
+            if not track.length_ms and dur and dur > 900:
+                continue
             why = official_reason(info, track, album)
-            if why:
-                e = dict(e, channel=info.get("channel") or e.get("channel"), duration=dur or e.get("duration"))
-                if why.startswith("label-delivered"):
-                    return e, why
-                fallback = fallback or (e, why)
-    if fallback is None and unchecked:
-        NOTES[track.track_id] = f"{unchecked} candidate(s) could not be checked because YouTube refused the request"
-    return fallback
+            e = dict(e, channel=info.get("channel") or e.get("channel"), duration=dur or e.get("duration"))
+            if not why:
+                if found["unofficial"] is None and by_artist(e, track, album) and not bad_version(e.get("title") or "", track, album, loose):
+                    found["unofficial"] = (e, "unofficial upload (no official source found)")
+            elif why.startswith("label-delivered"):
+                return e, why
+            elif found["official"] is None:
+                found["official"] = (e, why)
+        return None
+
+    for q in queries:
+        new = []
+        for e in search(q):
+            if e.get("id") not in seen:
+                seen.add(e.get("id"))
+                new.append(e)
+        pool += new
+        hit = scan(new, False)
+        if hit:
+            return hit
+    if not (found["official"] or found["unofficial"]):
+        hit = scan(pool, True)
+        if hit:
+            return hit
+    hit = found["official"] or found["unofficial"]
+    if hit is None and found["unchecked"]:
+        NOTES[track.track_id] = f"{found['unchecked']} candidate(s) could not be checked because YouTube refused the request"
+    return hit
 
 
 def entry_url(entry: dict) -> str:
