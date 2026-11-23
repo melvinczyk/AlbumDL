@@ -47,4 +47,4 @@ Higher sources win; lower ones only fill what is empty.
 
 ## Credits
 
-The background art is pixel art based on [this reference image](https://pin.it/riUD7eUiz).
+The background art is pixel art based on [this reference image](https://pin.it/3ZOsQX7u2).
