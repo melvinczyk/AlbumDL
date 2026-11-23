@@ -11,8 +11,9 @@ import requests
 
 from ..sources.musicbrainz import UA, Album, Track
 
-def encode(src: str, dst: str) -> None:
-    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", src, "-vn", "-map", "0:a:0", "-map_metadata", "-1",
+def encode(src: str, dst: str, start: float = 0.0, end: float = 0.0) -> None:
+    clip = ["-ss", f"{start:.3f}", "-to", f"{end:.3f}"] if end else []
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", src, *clip, "-vn", "-map", "0:a:0", "-map_metadata", "-1",
            "-c:a", "libmp3lame", "-b:a", "320k", dst]
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode != 0:
@@ -176,7 +177,23 @@ def _ytmusic(artist: str, title: str, size: int = 1200) -> Optional[bytes]:
     return None
 
 
+def _square(data: bytes) -> bytes:
+    from PIL import Image
+    img = Image.open(io.BytesIO(data)).convert("RGB")
+    side = min(img.size)
+    left, top = (img.width - side) // 2, (img.height - side) // 2
+    out = io.BytesIO()
+    img.crop((left, top, left + side, top + side)).save(out, "JPEG", quality=95)
+    return out.getvalue()
+
+
 def fetch_cover(album: Album) -> Tuple[Optional[bytes], str]:
+    if album.cover_url:
+        for url in (album.cover_url, album.cover_url.replace("maxresdefault", "hqdefault")):
+            data = _fetch(url, 2)
+            if data:
+                return _square(data), "YouTube thumbnail"
+        return None, ""
     def caa(kind: str, mid: str) -> Optional[bytes]:
         return _fetch(f"https://coverartarchive.org/{kind}/{mid}/front")
 
@@ -220,7 +237,7 @@ _covers: dict = {}
 
 def cover_for(release: str, group: str, artist: str, title: str, size: int) -> Optional[bytes]:
     """A small cover for the web page: Cover Art Archive first, then iTunes. Cached, including misses."""
-    key = (release, group, size)
+    key = (release, group, artist, title, size)
     hit = _covers.get(key)
     if hit and time.time() - hit[0] < (86400 if hit[1] else 600):
         return hit[1]

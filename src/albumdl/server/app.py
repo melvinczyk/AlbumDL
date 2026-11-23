@@ -16,6 +16,7 @@ from starlette.exceptions import HTTPException
 
 from ..media import pipeline, tagging
 from ..sources import musicbrainz as mb
+from ..sources import youtube
 from ..sources.similar import artist_photo, similar_artists
 from .jobs import FINISHED, EventLog, JobManager, Library
 
@@ -136,6 +137,57 @@ def create_app(settings: Settings) -> FastAPI:
             r["owned"] = library.owned_album(r["artist"], r["title"])
         events.emit("info", "search", f"search artist={artist!r} album={album!r}: {len(rows)} albums")
         return {"results": rows}
+
+    @app.get("/api/ytm/search")
+    def ytm_search(q: str = ""):
+        rows = youtube.ytm_search(q.strip()[:200]) if q.strip() else []
+        for r in rows:
+            r["owned"] = library.owned_album(r["artist"], r["title"])
+        events.emit("info", "search", f"youtube music search {q!r}: {len(rows)} albums")
+        return {"results": rows}
+
+    @app.get("/api/yt/playlist")
+    def yt_playlist(url: str = ""):
+        try:
+            return youtube.import_playlist(url.strip()[:300])
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.post("/api/yt/download")
+    def yt_download(body: dict = Body(...)):
+        artist, title = str(body.get("artist", "")).strip()[:120], str(body.get("album", "")).strip()[:160]
+        tracks = [t for t in body.get("tracks", []) if isinstance(t, dict) and re.fullmatch(r"[\w-]{11}", str(t.get("id", ""))) and str(t.get("title", "")).strip()][:200]
+        if not artist or not title or not tracks:
+            raise HTTPException(400, "an artist, an album name and at least one track are needed")
+        year = re.sub(r"\D", "", str(body.get("year", "")))[:4]
+        album = mb.Album(mbid="", group_id="", title=title, artist=artist, artists=[artist], artist_ids=[], date=year, type="Album",
+                         genres=[str(body.get("genre", "")).strip()[:40]] if str(body.get("genre", "")).strip() else [],
+                         compilation=artist.lower() == "various artists", cover_url=f"https://i.ytimg.com/vi/{tracks[0]['id']}/maxresdefault.jpg")
+        for n, t in enumerate(tracks, 1):
+            secs = t.get("duration") if isinstance(t.get("duration"), (int, float)) else None
+            start, end = (float(t["start"]), float(t["end"])) if isinstance(t.get("start"), (int, float)) and isinstance(t.get("end"), (int, float)) and t["end"] > t["start"] >= 0 else (0.0, 0.0)
+            album.tracks.append(mb.Track(title=str(t["title"]).strip()[:200], number=n, disc=1, length_ms=int(secs * 1000) if secs else None,
+                                         artist=artist, artists=[artist], artist_ids=[], recording_id="", track_id=f"{t['id']}-{n}", source=t["id"], start=start, end=end))
+        if (pipeline.safe(artist), pipeline.safe(title)) in {(pipeline.safe(j.album.artist), pipeline.safe(j.album.title)) for j in jobs.listing() if j.status in ("queued", "running")}:
+            return {"queued": 0, "duplicates": 1}
+        jobs.submit(album)
+        return {"queued": 1, "duplicates": 0}
+
+    @app.post("/api/ytm/download")
+    def ytm_download(body: dict = Body(...)):
+        ids = [str(i) for i in body.get("albums", []) if re.fullmatch(r"MPREb_[\w-]+", str(i))][:20]
+        if not ids:
+            raise HTTPException(400, "nothing valid to download")
+        busy = {(pipeline.safe(j.album.artist), pipeline.safe(j.album.title)) for j in jobs.listing() if j.status in ("queued", "running")}
+        queued = duplicates = 0
+        for browse_id in ids:
+            album = youtube.ytm_album(browse_id)
+            if (pipeline.safe(album.artist), pipeline.safe(album.title)) in busy:
+                duplicates += 1
+            else:
+                jobs.submit(album)
+                queued += 1
+        return {"queued": queued, "duplicates": duplicates}
 
     @app.get("/api/artists")
     @guarded

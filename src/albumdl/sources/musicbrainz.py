@@ -101,6 +101,9 @@ class Track:
     recording_id: str
     track_id: str
     artist_sort: str = ""
+    source: str = ""
+    start: float = 0.0
+    end: float = 0.0
 
 
 @dataclass
@@ -127,6 +130,7 @@ class Album:
     language: str = ""
     script: str = ""
     asin: str = ""
+    cover_url: str = ""
     tracks: List[Track] = field(default_factory=list)
 
     @property

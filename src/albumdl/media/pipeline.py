@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional, Tuple
 
 from ..sources import musicbrainz as mb, youtube
-from . import tagging
+from . import metadata, tagging
 
 BAD_CHARS = '\\/:*?"<>|\n\r\t'
 ATTEMPTS = 5
@@ -85,6 +85,13 @@ def run(album: mb.Album, opts: Options, log: Callable[[str], None] = print,
         return os.path.join(folder, f"{name} - {safe(t.title)}.mp3")
 
     log(f"{album.artist} - {album.title} ({album.date or '?'}), {total} tracks -> {folder}")
+    imported = all(t.source for t in album.tracks)
+    try:
+        filled = {} if imported else metadata.fill(album)
+        if filled:
+            log("metadata filled: " + ", ".join(f"{f} from {src}" for f, src in filled.items()))
+    except Exception as exc:
+        log(f"metadata lookup failed: {str(exc)[:100]}")
     os.makedirs(folder, exist_ok=True)
     for stale in glob.glob(os.path.join(glob.escape(folder), "*.part")):
         os.remove(stale)
@@ -105,11 +112,23 @@ def run(album: mb.Album, opts: Options, log: Callable[[str], None] = print,
             say(f"cover failed: {str(exc)[:100]}")
             return b""
 
+    src_tmp = tempfile.TemporaryDirectory()
+    shared_locks = {t.source: threading.Lock() for t in album.tracks if t.end}
+    shared_files: dict = {}
+
+    def shared(vid: str):
+        with shared_locks[vid]:
+            if vid not in shared_files:
+                folder_ = os.path.join(src_tmp.name, vid)
+                os.makedirs(folder_, exist_ok=True)
+                shared_files[vid] = youtube.download(f"https://www.youtube.com/watch?v={vid}", folder_)
+            return shared_files[vid]
+
     with ThreadPoolExecutor(max_workers=1) as one:
         cover_job = one.submit(get_cover)
         playlist = None
         try:
-            url = retrying(lambda: youtube.find_album_playlist(album), opts.cancel)
+            url = None if imported else retrying(lambda: youtube.find_album_playlist(album), opts.cancel)
             if url:
                 playlist = retrying(lambda: youtube.playlist_entries(url), opts.cancel)
                 for n, e in enumerate(playlist, 1):
@@ -122,9 +141,11 @@ def run(album: mb.Album, opts: Options, log: Callable[[str], None] = print,
             note(i, "working", "finding source", attempts=n)
             t0 = time.time()
             entry, why = None, "official YouTube Music album playlist"
-            if playlist:
+            if t.source:
+                entry, why = {"id": t.source, "title": t.title, "channel": "YouTube link"}, "imported from a YouTube link"
+            elif playlist:
                 entry = youtube.match_playlist(t, playlist, i, album)
-            if entry is None:
+            if entry is None and not t.source:
                 hit = youtube.search_official(t, album)
                 entry, why = hit if hit else (None, "")
             t_find = time.time() - t0
@@ -136,14 +157,14 @@ def run(album: mb.Album, opts: Options, log: Callable[[str], None] = print,
             who = entry.get("channel") or entry.get("uploader") or "?"
             url = youtube.entry_url(entry)
             info = {"channel": who, "yt_title": entry.get("title"), "url": url, "why": why, "t_find": t_find, "attempts": n}
-            note(i, "working", f"downloading from {who}", **info)
+            note(i, "working", f"downloading from {who}" if not t.end else "cutting the chapter out of the video", **info)
             with tempfile.TemporaryDirectory() as td:
                 t1 = time.time()
-                src, acodec, abr = youtube.download(url, td)
+                src, acodec, abr = shared(t.source) if t.end else youtube.download(url, td)
                 info.update(t_dl=time.time() - t1, src_bytes=os.path.getsize(src), acodec=acodec, src_kbps=round(abr or 0))
                 note(i, "working", "encoding and tagging", **info)
                 tmp = os.path.join(td, "track.mp3")
-                tagging.encode(src, tmp)
+                tagging.encode(src, tmp, t.start, t.end)
                 tagging.tag(tmp, album, t, cover_job.result(), url)
                 info.update(out_bytes=os.path.getsize(tmp))
                 publish(tmp, target(t))
@@ -182,6 +203,7 @@ def run(album: mb.Album, opts: Options, log: Callable[[str], None] = print,
             say(f"{len(pending)} tracks failed; trying them again in {60 * rnd}s")
             opts.cancel.wait(60 * rnd)
 
+    src_tmp.cleanup()
     missing = [(i, t) for i, t in enumerate(album.tracks, 1) if outcome.get(i) != "ok"]
     marker = os.path.join(folder, INCOMPLETE)
     if missing:

@@ -57,15 +57,15 @@ function show(name) {
 document.querySelectorAll('[data-view]').forEach(b => b.addEventListener('click', () => show(b.dataset.view)));
 addEventListener('hashchange', () => show(location.hash.slice(1)));
 
-let results = [], title = '', filter = 'All', artistCtx = null, fresh = false;
+let lastQ = '', results = [], title = '', filter = 'All', artistCtx = null, fresh = false;
 const selected = new Map();
 const typeOf = r => ['Album', 'EP', 'Single'].includes(r.type) ? (r.secondary.length ? r.secondary[0] : r.type) : (r.type || 'Other');
-const pick = r => ({ id: r.id, title: r.title, artist: r.artist });
+const pick = r => ({ id: r.id, title: r.title, artist: r.artist, ytm: r.ytm });
 const skeleton = () => el('div', { class: 'grid' }, Array.from({ length: 8 }, () => el('div', { class: 'card sk' }, el('span', { class: 'cover' }), el('span', { class: 'meta' }, el('b', { text: '\u00a0' }), el('small', { text: '\u00a0' })))));
 
 $('#searchForm').addEventListener('submit', async ev => {
   ev.preventDefault();
-  const q = $('#q').value.trim(); if (!q) return;
+  const q = $('#q').value.trim(); if (!q) return; lastQ = q.replace(/\s+[-–—]\s+/g, ' ');
   $('#q').blur(); $('#searchBtn').disabled = true;
   selected.clear(); artistCtx = null; drawActions(); fill($('#artistBar')); fill($('#similar'));
   fill($('#results'), skeleton());
@@ -73,15 +73,53 @@ $('#searchForm').addEventListener('submit', async ev => {
   $('#searchBtn').disabled = false;
 });
 async function search(q) {
+  if (/(?:youtube\.com|youtu\.be)\//i.test(q)) return importYt(q);
   const link = q.match(/musicbrainz\.org\/(release-group|release)\/([0-9a-f-]{36})/i);
   if (link) return direct(link[1].toLowerCase(), link[2].toLowerCase());
   const split = q.split(/\s+[-–—]\s+/);
-  if (split.length > 1) return rows(await api('/api/search?artist=' + encodeURIComponent(split[0]) + '&album=' + encodeURIComponent(split.slice(1).join(' - '))), 'Results');
+  if (split.length > 1) {
+    const d = await api('/api/search?artist=' + encodeURIComponent(split[0]) + '&album=' + encodeURIComponent(split.slice(1).join(' - ')));
+    return d.results.length ? rows(d, 'Results') : searchYtm(split.join(' '));
+  }
   const { artists } = await api('/api/artists?q=' + encodeURIComponent(q));
   if (artists.length && artists[0].score >= 85) return showArtist(artists[0], artists);
   const d = await api('/api/search?album=' + encodeURIComponent(q));
-  if (d.results.length || !artists.length) return rows(d, 'Results');
-  showArtist(artists[0], artists);
+  if (d.results.length) return rows(d, 'Results');
+  if (artists.length) return showArtist(artists[0], artists);
+  searchYtm(q);
+}
+async function importYt(url) {
+  const d = await api('/api/yt/playlist?url=' + encodeURIComponent(url));
+  const field = (label, key, hint) => { const i = el('input', { type: 'text', value: d[key], 'aria-label': label, placeholder: hint, oninput: () => { d[key] = i.value; } }); return el('label', { class: 'field' }, el('small', { text: label }), i); };
+  d.tracks.forEach((t, i) => { t.key = i; });
+  const picked = new Set(d.tracks.map(t => t.key)), go = el('button', { class: 'btn go', type: 'button' });
+  const sync = () => { go.disabled = !picked.size; go.textContent = `Download ${picked.size} ${picked.size === 1 ? 'track' : 'tracks'}`; };
+  go.onclick = async () => {
+    go.disabled = true;
+    try {
+      const r = await api('/api/yt/download', { artist: d.artist, album: d.album, year: d.year, genre: d.genre, tracks: d.tracks.filter(t => picked.has(t.key)) });
+      toast(r.queued ? `Queued ${d.album}` : 'Already in the queue', 'ok', { label: 'Queue', fn: () => show('queue') }); tick();
+    } catch (e) { toast(e.message, 'error'); }
+    sync();
+  };
+  selected.clear(); drawActions(); results = [];
+  fill($('#results'), el('div', { class: 'bar' }, el('h2', { text: 'Import from YouTube' }), el('span', { class: 'sub', text: d.tracks[0].end ? d.tracks.length + ' chapters in one video' : d.tracks.length + ' videos' }), el('span', { style: 'margin-left:auto' }, go)),
+    el('div', { class: 'imp' }, field('Artist', 'artist', 'Various Artists'), field('Album', 'album', ''), field('Year', 'year', 'optional'), field('Genre', 'genre', 'optional')),
+    el('div', { class: 'tlist' }, d.tracks.map(t => {
+      const box = el('input', { type: 'checkbox', checked: true, 'aria-label': 'Include ' + t.title, onchange: () => { box.checked ? picked.add(t.key) : picked.delete(t.key); sync(); } });
+      const name = el('input', { type: 'text', value: t.title, 'aria-label': 'Track title', oninput: () => { t.title = name.value; } });
+      return el('div', { class: 'trow' }, box, el('span', { class: 'sz', text: String(t.number).padStart(2, '0') }), name, el('span', { class: 'sz', text: t.duration ? Math.floor(t.duration / 60) + ':' + pad(t.duration % 60) : '' }));
+    })),
+    el('p', { class: 'foot', text: 'Tags come from what you enter here. The cover is the video thumbnail.' }));
+  sync();
+}
+async function searchYtm(q) {
+  fill($('#results'), skeleton());
+  try {
+    const d = await api('/api/ytm/search?q=' + encodeURIComponent(q));
+    if (!d.results.length) return fill($('#results'), el('div', { class: 'msg', text: 'Nothing found on MusicBrainz or YouTube Music. Check the spelling.' }));
+    rows(d, 'YouTube Music');
+  } catch (e) { fill($('#results'), el('div', { class: 'msg err', text: e.message })); }
 }
 async function direct(kind, id) {
   let rid = id;
@@ -131,12 +169,13 @@ function renderResults() {
       const card = el('button', { class: 'card' + (selected.has(r.id) ? ' on' : ''), style: `--i:${Math.min(i, 16)}`, type: 'button', 'aria-pressed': selected.has(r.id), onclick: () => {
         const on = !selected.has(r.id); on ? selected.set(r.id, pick(r)) : selected.delete(r.id);
         card.classList.toggle('on', on); card.setAttribute('aria-pressed', on); drawActions(); } },
-        cover(coverUrl('', r.id, r.artist, r.title, 250)), el('span', { class: 'tick' }, pic('check', 'c')),
+        cover(r.ytm ? r.thumb : coverUrl('', r.id, r.artist, r.title, 250)), el('span', { class: 'tick' }, pic('check', 'c')),
         r.owned ? el('span', { class: 'tag' + (r.owned.incomplete ? ' part' : ''), text: r.owned.incomplete ? 'Incomplete' : 'In folder' }) : null,
         el('span', { class: 'meta' }, el('b', { text: r.title, title: r.title }),
           el('small', { text: [artistCtx ? '' : r.artist, r.date.slice(0, 4), typeOf(r)].filter(Boolean).join(' · ') })));
       return card;
-    })));
+    })),
+    el('p', { class: 'foot' }, results[0] && results[0].ytm ? 'These come from YouTube Music, not MusicBrainz. Genre, label and date are filled in from Deezer when it has the album.' : [el('span', { text: 'Not here? ' }), el('button', { class: 'btn sm ghost', type: 'button', text: 'Search YouTube Music', onclick: () => searchYtm(lastQ) })]));
   fresh = false; drawActions();
 }
 const libSel = new Map(), lkey = a => a.artist + '\u0000' + a.title;
@@ -181,7 +220,9 @@ $('#retryBtn').addEventListener('click', async () => {
 $('#dlBtn').addEventListener('click', async () => {
   const groups = [...selected.values()], btn = $('#dlBtn'); btn.disabled = true;
   try {
-    const r = await api('/api/discography', { name: artistCtx ? artistCtx.name : groups[0].artist, groups, skip_owned: false });
+    const r = groups[0].ytm
+      ? await api('/api/ytm/download', { albums: groups.map(g => g.id) }).then(d => ({ duplicates: d.duplicates }))
+      : await api('/api/discography', { name: artistCtx ? artistCtx.name : groups[0].artist, groups, skip_owned: false });
     const added = groups.length - r.duplicates;
     toast(!added ? 'Already in the queue' : (groups.length === 1 ? `Queued ${groups[0].title}` : `Queued ${added} albums`) + (r.duplicates && added ? `, ${r.duplicates} already queued` : ''), 'ok', { label: 'Queue', fn: () => show('queue') });
     selected.clear(); drawActions(); renderResults(); tick();

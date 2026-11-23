@@ -91,6 +91,85 @@ def find_album_playlist(album: Album) -> Optional[str]:
     return f"https://www.youtube.com/playlist?list={best[1]}" if best else None
 
 
+NUM = re.compile(r"^\W*(?:track|tr\.?|#)?\s*0*(\d{1,3})\b[\s\].:)\-–_]*", re.I)
+
+
+def clean_titles(titles: List[str], shared: bool = True) -> List[Tuple[int, str]]:
+    """Strip what every title shares (the album name) and the track numbers, so only the song names are left."""
+    prefix = os.path.commonprefix(titles) if shared and len(titles) > 1 else ""
+    prefix = prefix[:max(prefix.rfind(c) for c in " ])-") + 1]
+    out = []
+    for n, raw in enumerate(titles, 1):
+        rest = re.sub(r"^\W*\d{1,2}:\d{2}(?::\d{2})?\b[\s\-–.)]*", "", raw[len(prefix):].strip())
+        m = NUM.match(rest)
+        number, rest = (int(m.group(1)), rest[m.end():]) if m else (n, rest)
+        out.append((number, rest.strip(" -–_[]()") or raw))
+    return out
+
+
+def import_playlist(url: str) -> dict:
+    """Read a YouTube playlist (or one video) so it can be turned into an album by hand."""
+    host = re.match(r"https?://(?:www\.|m\.|music\.)?(youtube\.com|youtu\.be)/", url)
+    if not host:
+        raise ValueError("that is not a YouTube link")
+    pl = re.search(r"[?&]list=([\w-]+)", url)
+    with ydl({"extract_flat": True, "skip_download": True}) as y:
+        info = y.extract_info(f"https://www.youtube.com/playlist?list={pl.group(1)}" if pl else url, download=False) or {}
+    entries = [e for e in info.get("entries", [info]) if e and e.get("id") and e.get("title")]
+    if not entries:
+        raise ValueError("no videos found in that link")
+    chapters = []
+    if len(entries) == 1:
+        with ydl({"skip_download": True}) as y:
+            video = y.extract_info(f"https://www.youtube.com/watch?v={entries[0]['id']}", download=False) or {}
+        chapters = [c for c in video.get("chapters") or [] if c.get("title") and c.get("end_time")]
+        info = dict(info, title=info.get("title") if pl else video.get("title") or entries[0]["title"])
+    name = re.sub(r"\s*[\[(]\s*(?:official\s+)?(?:OST|Soundtrack|Full\s+(?:Album|EP))(?:\s*[-–]\s*HD|\s+Stream)?\s*[\])]\s*", " ", info.get("title") or entries[0]["title"], flags=re.I)
+    name = re.sub(r"^\s*\[[^\]]*\]\s*", "", name)
+    found_year = re.search(r"\s[-–]\s*((?:19|20)\d{2})\s*$", name.strip(" -–|"))
+    name = (name.strip(" -–|")[:found_year.start()] if found_year else name).strip(" -–|")
+    artist = name.split(" - ", 1)[0].strip() if " - " in name else "Various Artists"
+    album = name.split(" - ", 1)[1].strip() if " - " in name else name
+    if len(chapters) > 1:
+        vid = entries[0]["id"]
+        tracks = [{"id": vid, "title": t, "number": n, "duration": round(c["end_time"] - c["start_time"]), "start": c["start_time"], "end": c["end_time"]}
+                  for c, (n, t) in zip(chapters, clean_titles([c["title"] for c in chapters], shared=False))]
+        tracks = [dict(t, number=i) for i, t in enumerate(tracks, 1)]
+    else:
+        tracks = [{"id": e["id"], "title": t, "number": n, "duration": e.get("duration")}
+                  for e, (n, t) in zip(entries, clean_titles([e["title"] for e in entries]))]
+    if len(tracks) == 1 and not tracks[0].get("end"):
+        tracks[0]["title"] = album
+    return {"artist": artist, "album": album, "year": found_year.group(1) if found_year else "", "genre": "Soundtrack" if re.search(r"\bOST\b|soundtrack", info.get("title") or "", re.I) else "",
+            "thumb": f"https://i.ytimg.com/vi/{entries[0]['id']}/maxresdefault.jpg", "tracks": tracks}
+
+
+def ytm_search(query: str) -> List[dict]:
+    from ytmusicapi import YTMusic
+    out = []
+    for r in YTMusic().search(query, filter="albums", limit=12):
+        if r.get("browseId"):
+            out.append({"id": r["browseId"], "title": r.get("title", ""), "artist": " & ".join(a["name"] for a in r.get("artists", [])) or "Unknown",
+                        "type": r.get("type") or "Album", "secondary": [], "date": str(r.get("year") or ""),
+                        "thumb": (r.get("thumbnails") or [{}])[-1].get("url", ""), "ytm": True})
+    return out
+
+
+def ytm_album(browse_id: str) -> Album:
+    from ytmusicapi import YTMusic
+    a = YTMusic().get_album(browse_id)
+    names = [x["name"] for x in a.get("artists", [])] or ["Unknown"]
+    album = Album(mbid="", group_id="", title=a["title"], artist=" & ".join(names), artists=names, artist_ids=[],
+                  date=str(a.get("year") or ""), type=a.get("type") or "Album")
+    for n, t in enumerate((t for t in a.get("tracks", []) if t.get("videoId") and t.get("isAvailable", True)), 1):
+        who = [x["name"] for x in t.get("artists", []) if x.get("name")] or names
+        album.tracks.append(Track(title=t["title"], number=n, disc=1, length_ms=(t.get("duration_seconds") or 0) * 1000 or None,
+                                  artist=" & ".join(who), artists=who, artist_ids=[], recording_id="", track_id=t["videoId"]))
+    if not album.tracks:
+        raise RuntimeError("that album has no downloadable tracks")
+    return album
+
+
 def score(entry: dict, track: Track, album: Album, loose: bool = False) -> float:
     title = entry.get("title") or ""
     channel = entry.get("channel") or entry.get("uploader") or ""
