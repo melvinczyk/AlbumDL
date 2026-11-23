@@ -282,3 +282,14 @@ nav button { transition: background .2s, color .2s; }
 .acts { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; flex: 0 1 auto; margin-left: auto; }
 .acts .btn { min-height: 36px; padding: 0 14px; font-size: 12px; }
 .acts .btn[hidden] { display: none; }
+
+.lyrow { display: grid; gap: 6px; padding: 10px 0; border-top: 1px solid var(--line); }
+.lyrow:first-of-type { border-top: 0; }
+.lyhead { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
+.lyhead b { min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
+.lyric-area { width: 100%; padding: 10px 12px; background: var(--k); color: var(--w); border: 2px solid var(--line); border-radius: 10px; font: 13px/1.4 var(--mono); resize: vertical; }
+.lyric-area:focus { outline: none; border-color: var(--c1); }
+
+.scan { position: relative; }
+#scanMenu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 25; display: grid; gap: 4px; min-width: 200px; padding: 6px; background: var(--k); border: 2px solid var(--line); border-radius: 16px; box-shadow: 0 8px 24px rgba(0, 0, 0, .5); }
+#scanMenu .btn { justify-content: flex-start; width: 100%; }

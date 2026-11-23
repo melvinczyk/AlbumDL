@@ -126,18 +126,22 @@ class Library:
                 newest = 0.0
                 cover = incomplete = False
                 first = ""
+                audio_bases, lyric_bases = [], set()
                 try:
                     for f in os.scandir(os.path.join(apath, album)):
                         low = f.name.lower()
                         if f.name.startswith(".") or not f.is_file():
                             continue
                         if low.endswith(AUDIO):
+                            audio_bases.append(os.path.splitext(low)[0])
                             if low.endswith(".mp3") and (not first or f.name < first):
                                 first = f.name
                             st = f.stat()
                             tracks, size, newest = tracks + 1, size + st.st_size, max(newest, st.st_mtime)
                         elif low == "cover.jpg":
                             cover = True
+                        elif low.endswith((".lrc", ".txt")) and f.name != pipeline.INCOMPLETE:
+                            lyric_bases.add(os.path.splitext(low)[0])
                         elif f.name == pipeline.INCOMPLETE:
                             incomplete = True
                 except OSError:
@@ -151,6 +155,7 @@ class Library:
                     missing = [l for l in (parts[1].split("\n") if len(parts) > 1 else []) if l.strip()]
                 out.append({"artist": artist, "title": album, "tracks": tracks, "size": size, "mtime": newest,
                             "cover": cover, "incomplete": incomplete, "missing": missing,
+                            "lyrics": sum(1 for b in audio_bases if b in lyric_bases),
                             "gaps": self._gaps(os.path.join(apath, album, first)) if first else []})
         return out
 

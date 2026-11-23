@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
@@ -18,7 +19,7 @@ from starlette.exceptions import HTTPException
 
 from ..media import pipeline, tagging
 from ..sources import musicbrainz as mb
-from ..sources import youtube
+from ..sources import lyrics, youtube
 from ..sources.similar import artist_photo, similar_artists
 from .jobs import FINISHED, EventLog, JobManager, Library
 
@@ -368,6 +369,89 @@ def create_app(settings: Settings) -> FastAPI:
         except requests.RequestException as exc:
             raise HTTPException(400, f"could not download that link ({type(exc).__name__})")
         return apply_cover(str(body.get("artist", "")), str(body.get("album", "")), data, bool(body.get("square", True)))
+
+    def lyric_meta(path: str, d: dict):
+        from mutagen.mp3 import MP3
+        m = MP3(path)
+        tags = m.tags or {}
+        return (str(tags.get("TPE1") or d["artist"]), str(tags.get("TIT2") or ""), str(tags.get("TALB") or d["album"]), m.info.length)
+
+    def lyric_album(artist: str, album: str):
+        d = library.album_detail(artist[:200], album[:200])
+        if not d:
+            raise HTTPException(404, "album not found")
+        return d, os.path.join(settings.out_root, d["artist_dir"], d["album_dir"])
+
+    def find_lyrics(d: dict, folder: str, files: list, overwrite: bool) -> dict:
+        def one(name: str):
+            path = os.path.join(folder, name)
+            if not overwrite and lyrics.existing(path):
+                return name, lyrics.state(path)
+            try:
+                a, t, al, dur = lyric_meta(path, d)
+                res = lyrics.find(a, t, al, dur)
+                return name, lyrics.save(path, res["synced"] or res["plain"]) if res else lyrics.state(path)
+            except Exception:
+                return name, lyrics.state(path)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            return dict(pool.map(one, files))
+
+    @app.get("/api/library/lyrics")
+    def lyrics_list(artist: str = "", album: str = ""):
+        d, folder = lyric_album(artist, album)
+        return {"tracks": [{"file": t["file"], "title": t["title"], "state": lyrics.state(os.path.join(folder, t["file"]))} for t in d["tracks"]]}
+
+    @app.post("/api/library/lyrics/find")
+    def lyrics_find(body: dict = Body(...)):
+        d, folder = lyric_album(str(body.get("artist", "")), str(body.get("album", "")))
+        names = [t["file"] for t in d["tracks"]]
+        files = [f for f in (body.get("files") or names) if f in names]
+        return {"states": find_lyrics(d, folder, files, bool(body.get("overwrite")))}
+
+    @app.post("/api/library/lyrics/save")
+    async def lyrics_save(request: Request, artist: str = "", album: str = "", file: str = ""):
+        raw = await request.body()
+        if not raw or len(raw) > 1_000_000:
+            raise HTTPException(400, "the lyrics are empty or larger than 1 MB")
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = raw.decode("cp1252", errors="replace")
+        d, folder = lyric_album(artist, album)
+        if file not in [t["file"] for t in d["tracks"]]:
+            raise HTTPException(404, "track not found")
+        return {"state": await run_in_threadpool(lyrics.save, os.path.join(folder, file), text)}
+
+    lyric_run = {"running": False}
+
+    @app.post("/api/library/lyrics/find-all")
+    def lyrics_find_all(body: dict = Body(default={})):
+        if lyric_run["running"]:
+            raise HTTPException(409, "already searching for lyrics")
+        only = {(str(a.get("artist", "")), str(a.get("title", ""))) for a in body.get("albums", []) if isinstance(a, dict)} or None
+        lyric_run["running"] = True
+
+        def run():
+            found = total = 0
+            events.emit("info", "lyrics", "looking for missing lyrics")
+            try:
+                for row in library.albums():
+                    if row["lyrics"] >= row["tracks"] or (only is not None and (row["artist"], row["title"]) not in only):
+                        continue
+                    try:
+                        d, folder = lyric_album(row["artist"], row["title"])
+                        missing = [t["file"] for t in d["tracks"] if lyrics.state(os.path.join(folder, t["file"])) == "none"]
+                        got = sum(1 for s in find_lyrics(d, folder, missing, False).values() if s != "none")
+                    except Exception as exc:
+                        events.emit("warn", "lyrics", f"{row['artist']} - {row['title']}: {str(exc)[:100]}")
+                        continue
+                    found, total = found + got, total + len(missing)
+                    events.emit("ok" if got == len(missing) else "info", "lyrics", f"{row['artist']} - {row['title']}: {got} of {len(missing)} found")
+            finally:
+                lyric_run["running"] = False
+            events.emit("ok", "lyrics", f"lyrics done: {found} of {total} found")
+        threading.Thread(target=run, daemon=True).start()
+        return {"started": True}
 
     @app.get("/api/library/album")
     def library_album(artist: str = "", album: str = ""):

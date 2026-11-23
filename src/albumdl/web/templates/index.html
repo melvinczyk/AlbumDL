@@ -43,7 +43,13 @@
   <main class="view" id="v-library">
     <div class="logbar">
       <input type="text" id="libFilter" placeholder="Filter albums" aria-label="Filter albums">
-      <button class="btn sm ghost" id="coversBtn" type="button">Find missing covers</button>
+      <div class="scan">
+        <button class="btn sm ghost" id="scanBtn" type="button" aria-expanded="false">Scan library</button>
+        <div id="scanMenu" hidden>
+          <button class="btn sm ghost" id="lyrAllBtn" type="button">Scan for lyrics</button>
+          <button class="btn sm ghost" id="coversBtn" type="button">Scan for covers</button>
+        </div>
+      </div>
     </div>
     <div id="libEdit" hidden></div>
     <div class="alts" id="libChips"></div>

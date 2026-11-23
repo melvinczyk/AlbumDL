@@ -292,9 +292,9 @@ async function loadLibrary() {
 }
 function renderLibrary() {
   const q = $('#libFilter').value.trim().toLowerCase(), inc = lib.filter(a => a.incomplete).length, bare = lib.filter(a => !a.cover).length;
-  const bareData = lib.filter(a => a.gaps.length).length, modes = [['All', lib.length], ['Recent', 0], ['Incomplete', inc], ['Data incomplete', bareData], ['No cover', bare]];
+  const noLyr = lib.filter(a => a.lyrics < a.tracks).length, bareData = lib.filter(a => a.gaps.length).length, modes = [['All', lib.length], ['Recent', 0], ['Incomplete', inc], ['Data incomplete', bareData], ['No cover', bare], ['No lyrics', noLyr]];
   fill($('#libChips'), modes.map(([m, c]) => el('button', { class: 'chip' + (m === libMode ? ' on' : ''), type: 'button', text: c ? `${m} · ${c}` : m, onclick: () => { libMode = m; renderLibrary(); } })));
-  let rows = lib.filter(a => (!q || (a.artist + ' ' + a.title).toLowerCase().includes(q)) && ({ All: 1, Recent: 1, Incomplete: a.incomplete, 'Data incomplete': a.gaps.length, 'No cover': !a.cover }[libMode]));
+  let rows = lib.filter(a => (!q || (a.artist + ' ' + a.title).toLowerCase().includes(q)) && ({ All: 1, Recent: 1, Incomplete: a.incomplete, 'Data incomplete': a.gaps.length, 'No cover': !a.cover, 'No lyrics': a.lyrics < a.tracks }[libMode]));
   if (libMode === 'Recent') rows = rows.slice().sort((a, b) => b.mtime - a.mtime).slice(0, 40);
   $('#libSum').textContent = lib.length ? `${rows.length} albums · ${rows.reduce((t, a) => t + a.tracks, 0)} tracks · ${bytes(rows.reduce((t, a) => t + a.size, 0))}` : '';
   const row = a => {
@@ -305,7 +305,8 @@ function renderLibrary() {
         el('small', { text: [libMode === 'All' ? '' : a.artist, a.tracks + (a.tracks === 1 ? ' track' : ' tracks'), bytes(a.size), a.mtime ? ago(a.mtime) : ''].filter(Boolean).join(' · ') }),
         a.incomplete ? el('span', { class: 'st part', text: a.missing.length ? `Missing ${a.missing.length}: ${a.missing.join(', ')}` : 'Incomplete' }) : null,
         a.gaps.length ? el('span', { class: 'st part', text: 'Data incomplete: no ' + a.gaps.join(', no ') }) : null,
-        !a.cover ? el('span', { class: 'st wait', text: 'No cover' }) : null),
+        !a.cover ? el('span', { class: 'st wait', text: 'No cover' }) : null,
+        libMode === 'No lyrics' && a.lyrics < a.tracks ? el('span', { class: 'st wait', text: a.lyrics ? `Lyrics ${a.lyrics}/${a.tracks}` : 'No lyrics' }) : null),
       el('span', { class: 'tick' }, pic('check', 'c')));
     return r;
   };
@@ -341,6 +342,43 @@ async function openLinkerFor(job) {
   if (!a || !a.missing.length) return toast('That album is no longer listed as incomplete', 'error');
   openLinker(a);
 }
+$('#scanBtn').addEventListener('click', ev => { ev.stopPropagation(); const m = $('#scanMenu'); m.hidden = !m.hidden; $('#scanBtn').setAttribute('aria-expanded', String(!m.hidden)); });
+document.addEventListener('click', () => { $('#scanMenu').hidden = true; $('#scanBtn').setAttribute('aria-expanded', 'false'); });
+$('#lyrAllBtn').addEventListener('click', async () => {
+  try { await api('/api/library/lyrics/find-all', {}); toast('Looking for lyrics. Progress is in the Log.', 'ok', { label: 'Log', fn: () => show('log') }); } catch (e) { toast(e.message, 'error'); }
+});
+async function openLyrics(a) {
+  const host = $('#libEdit'), q = { artist: a.artist, album: a.title }, label = { synced: 'Synced', plain: 'Plain', none: 'None' }, paints = {};
+  let d;
+  try { d = await api('/api/library/lyrics?' + new URLSearchParams(q)); } catch (e) { return toast(e.message, 'error'); }
+  const send = (file, body) => fetch('/api/library/lyrics/save?' + new URLSearchParams({ ...q, file }), { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body })
+    .then(async r => { const j = await r.json().catch(() => ({})); if (!r.ok || j.error) throw new Error(j.error || 'HTTP ' + r.status); paints[file](j.state); toast('Lyrics saved', 'ok'); loadLibrary(); });
+  const rows = d.tracks.map(t => {
+    const st = el('span', { class: 'st' });
+    paints[t.file] = s => { st.className = 'st ' + (s === 'none' ? 'wait' : 'done'); st.textContent = label[s]; };
+    paints[t.file](t.state);
+    const find = el('button', { class: 'btn sm ghost', type: 'button', text: 'Find', onclick: async () => {
+      find.disabled = true;
+      try { const s = (await api('/api/library/lyrics/find', { ...q, files: [t.file], overwrite: true })).states[t.file]; paints[t.file](s); toast(s === 'none' ? 'No lyrics found online' : 'Lyrics saved', s === 'none' ? 'error' : 'ok'); loadLibrary(); } catch (e) { toast(e.message, 'error'); }
+      find.disabled = false;
+    } });
+    const fileIn = el('input', { type: 'file', accept: '.lrc,.txt,text/plain', hidden: true, onchange: () => { const f = fileIn.files[0]; if (f) send(t.file, f).catch(e => toast(e.message, 'error')).then(() => { fileIn.value = ''; }); } });
+    const area = el('textarea', { class: 'lyric-area', rows: 6, hidden: true, placeholder: 'Paste the lyrics here (plain text or .lrc)', 'aria-label': 'Lyrics for ' + t.title });
+    const save = el('button', { class: 'btn sm go', type: 'button', text: 'Save', hidden: true, onclick: () => send(t.file, area.value).then(() => { area.hidden = true; save.hidden = true; area.value = ''; }).catch(e => toast(e.message, 'error')) });
+    return el('div', { class: 'lyrow' }, el('div', { class: 'lyhead' }, el('b', { text: t.title }), st),
+      el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, find, el('button', { class: 'btn sm ghost', type: 'button', text: 'File', onclick: () => fileIn.click() }), fileIn,
+        el('button', { class: 'btn sm ghost', type: 'button', text: 'Paste', onclick: () => { area.hidden = !area.hidden; save.hidden = area.hidden; } })), area, save);
+  });
+  const all = el('button', { class: 'btn sm go', type: 'button', text: 'Find missing', style: 'margin-left:auto', onclick: async () => {
+    all.disabled = true;
+    try { const r = await api('/api/library/lyrics/find', { ...q }); Object.entries(r.states).forEach(([f, s]) => paints[f](s)); toast('Lyrics search finished', 'ok'); loadLibrary(); } catch (e) { toast(e.message, 'error'); }
+    all.disabled = false;
+  } });
+  fill(host, el('div', { class: 'edit' }, el('div', { class: 'bar' }, el('h2', { text: 'Lyrics' }), el('span', { class: 'sub', text: `${a.artist} - ${a.title}` }), all),
+    el('p', { class: 'sub', text: 'Saved next to each song as a .lrc file. Find looks it up online; File or Paste uses your own.' }), rows,
+    el('div', { style: 'margin-top:12px' }, el('button', { class: 'btn ghost', type: 'button', text: 'Close', onclick: () => { host.hidden = true; } }))));
+  host.hidden = false; host.scrollIntoView({ block: 'start', behavior: 'smooth' });
+}
 $('#editBtn').addEventListener('click', () => { const a = [...libSel.values()][0]; if (a) openEditor(a.artist, a.title); });
 async function openEditor(artist, title) {
   let d;
@@ -370,7 +408,8 @@ async function openEditor(artist, title) {
     } catch (e) { toast(e.message, 'error'); save.disabled = false; }
   } });
   fill(host, el('div', { class: 'edit' },
-    el('div', { class: 'bar' }, el('h2', { text: 'Edit tags' }), el('span', { class: 'sub', text: d.tracks.length + (d.tracks.length === 1 ? ' track' : ' tracks') })),
+    el('div', { class: 'bar' }, el('h2', { text: 'Edit tags' }), el('span', { class: 'sub', text: d.tracks.length + (d.tracks.length === 1 ? ' track' : ' tracks') }),
+      el('button', { class: 'btn sm ghost', type: 'button', style: 'margin-left:auto', text: 'Lyrics', onclick: () => openLyrics({ artist: d.artist_dir, title: d.album_dir }) })),
     coverRow,
     el('div', { class: 'imp' }, field('Artist', 'artist', ''), field('Album', 'album', ''), field('Year', 'year', '2012'), field('Genre', 'genre', 'optional'), field('Label', 'label', 'optional')),
     el('div', { class: 'tlist' }, d.tracks.map((t, i) => { const inp = el('input', { type: 'text', value: t.title, 'aria-label': 'Track ' + (i + 1) + ' title', oninput: () => { titles[t.file] = inp.value; } }); return el('div', { class: 'erow' }, el('span', { class: 'sz', text: String(i + 1).padStart(2, '0') }), inp); })),
@@ -430,7 +469,7 @@ function paintTracks(n, d) {
   const sig = JSON.stringify(d.tracks.map(t => [t.n, t.state, t.text, t.out_bytes, t.src_bytes]));
   if (n.sig === sig) return; n.sig = sig;
   fill(n.tracks, d.tracks.map(t => {
-    const note = t.state === 'done' ? [t.acodec ? `${t.acodec}${t.src_kbps ? ' ' + t.src_kbps + 'k' : ''} → mp3` : '', /unofficial/.test(t.why || '') ? 'unofficial upload' : ''].filter(Boolean).join(' · ') : t.text;
+    const note = t.state === 'done' ? [t.acodec ? `${t.acodec}${t.src_kbps ? ' ' + t.src_kbps + 'k' : ''} → mp3` : '', t.lyrics === 'synced' || t.lyrics === 'plain' ? t.lyrics + ' lyrics' : '', /unofficial/.test(t.why || '') ? 'unofficial upload' : ''].filter(Boolean).join(' · ') : t.text;
     return el('div', { class: 'tr ' + t.state }, el('span', { class: 'ico ' + t.state }),
       el('div', { style: 'min-width:0' }, el('div', { class: 'ti', text: t.title, title: t.title }), note ? el('small', { text: note }) : null),
       el('span', { class: 'sz', text: t.state === 'done' ? bytes(t.out_bytes || t.src_bytes) : '' }));

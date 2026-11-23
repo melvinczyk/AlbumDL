@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Tuple
 
-from ..sources import musicbrainz as mb, youtube
+from ..sources import lyrics, musicbrainz as mb, youtube
 from . import metadata, tagging
 
 BAD_CHARS = '\\/:*?"<>|\n\r\t'
@@ -195,6 +195,10 @@ def run(album: mb.Album, opts: Options, log: Callable[[str], None] = print,
                 tagging.tag(tmp, album, t, cover_job.result(), url)
                 info.update(out_bytes=os.path.getsize(tmp))
                 publish(tmp, target(t))
+                try:
+                    info.update(lyrics=lyrics.attach(target(t), t.artist, t.title, album.title, t.length_ms / 1000 if t.length_ms else None))
+                except Exception:
+                    pass
             say(f"[{i}/{total}] {t.title} <- {entry.get('title')} ({who}) done ({info['src_bytes'] // 1024} KB in {info['t_dl']:.1f}s)")
             note(i, "done", f"{who}: {why}", **info)
             return True

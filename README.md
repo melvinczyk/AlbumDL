@@ -33,7 +33,8 @@ OUTPUT_DIR=./out .venv/bin/albumdl
 
 - **Search** takes an artist, `Artist - Album` (any word order), or a MusicBrainz or YouTube link. Tap albums to select them, then **Download**.
 - **Not on MusicBrainz?** It falls back to YouTube Music, then to YouTube playlists and videos. Paste a YouTube link to import unofficial music; full-album videos are split by chapter.
-- **Library** lists what you have. Select albums to delete them, retry incomplete ones, edit tags and covers, or link a YouTube video for a missing track.
+- **Library** lists what you have. Select albums to delete them, retry incomplete ones, edit tags and covers, or link a YouTube video for a missing track. **Scan library** looks up missing lyrics or covers for every album in the background.
+- **Lyrics** are looked up on [LRCLIB](https://lrclib.net) during each download and saved next to the song as a `.lrc` file. Existing `.lrc` files are kept.
 - **Queue** shows progress and **Log** shows the server log.
 
 ## Where data comes from
@@ -42,6 +43,7 @@ Higher sources win; lower ones only fill what is empty.
 
 - **Albums:** MusicBrainz, then YouTube Music
 - **Tags:** MusicBrainz, then Deezer, iTunes, Last.fm
+- **Lyrics:** LRCLIB, or a file you add
 - **Covers:** Cover Art Archive, then iTunes and Deezer, then YouTube Music
 - **Audio:** your pasted link, the official album playlist, an official upload, then the best unofficial one
 
