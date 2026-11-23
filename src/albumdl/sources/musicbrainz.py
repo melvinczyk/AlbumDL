@@ -218,8 +218,13 @@ def artist_info(artist_id: str) -> dict:
 
 
 def artist_albums(artist_id: str) -> List[dict]:
-    data = _get("release-group", artist=artist_id, inc="artist-credits", limit=100)
-    rows = _group_rows(data)
+    rows, offset = [], 0
+    while True:
+        data = _get("release-group", artist=artist_id, inc="artist-credits", limit=100, offset=offset)
+        rows += _group_rows(data)
+        offset += 100
+        if offset >= data.get("release-group-count", 0) or offset >= 1500:
+            break
     rows.sort(key=lambda r: (TYPE_RANK.get(r["type"], 3), bool(r["secondary"]), r["date"] or "9999"))
     return rows
 

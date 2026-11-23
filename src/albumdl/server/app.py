@@ -259,7 +259,7 @@ def create_app(settings: Settings) -> FastAPI:
     def discography(body: dict = Body(...)):
         groups = [{"id": str(g.get("id", "")).lower(), "title": str(g.get("title", "")), "artist": str(g.get("artist", "")),
                    "release": r if re.fullmatch(MBID, r := str(g.get("release", "")).lower()) else ""}
-                  for g in body.get("groups", []) if isinstance(g, dict)][:150]
+                  for g in body.get("groups", []) if isinstance(g, dict)][:1500]
         if not groups or not all(re.fullmatch(MBID, g["id"]) for g in groups):
             raise HTTPException(400, "nothing valid to download")
         name = str(body.get("name") or groups[0]["artist"])[:120]
