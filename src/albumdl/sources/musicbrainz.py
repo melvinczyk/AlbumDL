@@ -1,5 +1,6 @@
 import collections
 import difflib
+import os
 import re
 import threading
 import time
@@ -9,7 +10,7 @@ from typing import List, Optional
 import requests
 
 API = "https://musicbrainz.org/ws/2"
-UA = "albumdl/0.1 ( personal album downloader )"
+UA = "albumdl/0.1" + (f" ( {os.environ['ALBUMDL_CONTACT']} )" if os.environ.get("ALBUMDL_CONTACT") else "")
 _last_call = 0.0
 _lock = threading.Lock()
 
@@ -97,16 +98,9 @@ class Track:
     artist: str
     artists: List[str]
     artist_ids: List[str]
-    isrcs: List[str]
     recording_id: str
     track_id: str
     artist_sort: str = ""
-    composers: List[str] = field(default_factory=list)
-    lyricists: List[str] = field(default_factory=list)
-    producers: List[str] = field(default_factory=list)
-    mixers: List[str] = field(default_factory=list)
-    engineers: List[str] = field(default_factory=list)
-    performers: List[tuple] = field(default_factory=list)
 
 
 @dataclass
@@ -145,45 +139,6 @@ def _credit(credit: list) -> tuple:
                    for c in credit)
     return (text, [c["artist"]["name"] for c in credit],
             [c["artist"]["id"] for c in credit])
-
-
-def _uniq(xs):
-    return list(dict.fromkeys(x for x in xs if x))
-
-
-def _credits(rec: dict) -> dict:
-    out = {"composers": [], "lyricists": [], "producers": [], "mixers": [],
-           "engineers": [], "performers": []}
-    writers = []
-    for rel in rec.get("relations", []):
-        typ, art = rel.get("type"), (rel.get("artist") or {}).get("name")
-        if rel.get("target-type") == "artist" and art:
-            if typ == "producer":
-                out["producers"].append(art)
-            elif typ == "mix":
-                out["mixers"].append(art)
-            elif typ in ("engineer", "recording", "sound"):
-                out["engineers"].append(art)
-            elif typ in ("vocal", "instrument", "performer"):
-                roles = rel.get("attributes") or ([] if typ != "vocal" else ["vocals"])
-                for role in roles or [typ]:
-                    out["performers"].append((role, art))
-        elif rel.get("target-type") == "work":
-            for w in rel["work"].get("relations", []):
-                wa = (w.get("artist") or {}).get("name")
-                if not wa:
-                    continue
-                if w["type"] == "composer":
-                    out["composers"].append(wa)
-                elif w["type"] == "lyricist":
-                    out["lyricists"].append(wa)
-                elif w["type"] == "writer":
-                    writers.append(wa)
-    out["composers"] = _uniq(out["composers"] or writers)
-    for k in ("lyricists", "producers", "mixers", "engineers"):
-        out[k] = _uniq(out[k])
-    out["performers"] = list(dict.fromkeys(out["performers"]))
-    return out
 
 
 def _norm(s: str) -> str:
@@ -272,10 +227,8 @@ def group_editions(group_id: str) -> List[dict]:
     return out
 
 
-def get_release(mbid: str, full: bool = True) -> Album:
+def get_release(mbid: str) -> Album:
     inc = "recordings+artist-credits+labels+genres+release-groups+media"
-    if full:
-        inc += "+isrcs+recording-level-rels+work-rels+work-level-rels+artist-rels"
     r = _get(f"release/{mbid}", inc=inc)
     group = r.get("release-group", {})
     text, names, ids = _credit(r.get("artist-credit", []))
@@ -287,7 +240,7 @@ def get_release(mbid: str, full: bool = True) -> Album:
         if label:
             break
     genres = r.get("genres") or group.get("genres") or []
-    if not genres and group.get("id") and full:
+    if not genres and group.get("id"):
         g = _get(f"release-group/{group['id']}", inc="genres+tags")
         genres = g.get("genres") or [t for t in g.get("tags", []) if t.get("count", 0) > 0]
     genres = [g["name"].title() for g in sorted(genres, key=lambda g: -g.get("count", 0))][:5]
@@ -316,16 +269,9 @@ def get_release(mbid: str, full: bool = True) -> Album:
                 title=t["title"], number=t["position"], disc=disc,
                 length_ms=t.get("length") or rec.get("length"),
                 artist=ttext or text, artists=tnames or names, artist_ids=tids or ids,
-                isrcs=rec.get("isrcs", []), recording_id=rec.get("id", ""),
+                recording_id=rec.get("id", ""),
                 track_id=t["id"],
                 artist_sort=((t.get("artist-credit") or rec.get("artist-credit") or [{}])[0]
                              .get("artist", {}).get("sort-name", "")),
-                **_credits(rec),
             ))
     return album
-
-
-def group_kind(row: dict) -> str:
-    if row.get("type") in ("Album", "EP", "Single"):
-        return row["secondary"][0] if row.get("secondary") else row["type"]
-    return row.get("type") or "Other"

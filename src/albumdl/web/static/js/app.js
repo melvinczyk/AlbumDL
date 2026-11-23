@@ -1,6 +1,6 @@
 'use strict';
 const $ = s => document.querySelector(s);
-const CAA = 'https://coverartarchive.org';
+const coverUrl = (release, group, artist, title, size) => '/api/cover?' + new URLSearchParams({ release: release || '', group: group || '', artist, title, size });
 const el = (tag, a, ...kids) => {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(a || {})) {
@@ -41,7 +41,7 @@ function cover(urls) {
   img.onload = () => img.classList.add('ok'); img.onerror = next; box.append(img); next();
   return box;
 }
-let view = 'discover', config = { formats: ['mp3'], format: 'mp3' };
+let view = 'discover';
 function show(name) {
   if (!document.getElementById('v-' + name)) name = 'discover';
   view = name; store.set('view', name);
@@ -61,13 +61,14 @@ function applyStats(s) {
   const slow = Date.now() - errAt < 30000;
   $('#led').className = 'led' + (slow ? ' warn' : ''); $('#led').title = slow ? 'MusicBrainz is slow or throttling; retrying' : 'MusicBrainz reachable';
 }
-let results = [], rFilter = 'All', current = null;
+let results = [], rFilter = 'All', current = null, artistCtx = null, confirming = null;
+const selected = new Map();
 const typeOf = r => ['Album', 'EP', 'Single'].includes(r.type) ? (r.secondary.length ? r.secondary[0] : r.type) : (r.type || 'Other');
 $('#searchForm').addEventListener('submit', async ev => {
   ev.preventDefault();
   const artist = $('#artist').value.trim(), album = $('#album').value.trim(), m = $('#searchMsg');
   if (!artist && !album) return;
-  fill($('#results')); fill($('#artistInfo')); fill($('#detail'));
+  fill($('#results')); fill($('#artistInfo')); fill($('#detail')); selected.clear(); artistCtx = null;
   fill(m, el('div', { class: 'msg' }, el('span', { class: 'spin' }), ' Searching…'));
   $('#searchBtn').disabled = true;
   try {
@@ -83,61 +84,64 @@ $('#searchForm').addEventListener('submit', async ev => {
   } catch (e) { fill(m, el('div', { class: 'msg err', text: e.message })); }
   $('#searchBtn').disabled = false;
 });
+async function queueAlbums(groups, skipOwned, name) {
+  const r = await api('/api/discography', { name, groups, skip_owned: skipOwned });
+  toast(`Queuing ${r.batch.total} albums`, 'ok', { label: 'View queue', fn: () => show('queue') }); tick();
+}
 function renderResults(title) {
   const host = $('#results'); if (!results.length) return fill(host);
   const kinds = ['All', ...new Set(results.map(typeOf))], rows = results.filter(r => rFilter === 'All' || typeOf(r) === rFilter);
+  const bar = el('div', { class: 'head' });
+  const drawBar = () => {
+    const n = selected.size, todo = rows.filter(r => !r.owned || r.owned.incomplete).length;
+    const go = el('button', { class: 'btn ' + (confirming ? 'hot' : 'go'), type: 'button', disabled: !n && !todo }, pic('download', 'k'),
+      n ? `Download selected (${n})` : confirming ? `Confirm: queue ${todo} albums` : `Download discography (${todo})`);
+    go.onclick = async () => {
+      if (n) {
+        go.disabled = true;
+        try { await queueAlbums([...selected.values()], false, artistCtx ? artistCtx.name : [...selected.values()][0].artist); selected.clear(); renderResults(title); } catch (e) { toast(e.message, 'error'); go.disabled = false; }
+      } else if (!confirming) {
+        confirming = setTimeout(() => { confirming = null; drawBar(); }, 4000); drawBar();
+      } else {
+        clearTimeout(confirming); confirming = null; go.disabled = true;
+        try { await queueAlbums(rows.map(r => ({ id: r.id, title: r.title, artist: r.artist })), true, artistCtx.name); } catch (e) { toast(e.message, 'error'); }
+        drawBar();
+      }
+    };
+    fill(bar, el('button', { class: 'btn sm ghost', type: 'button', text: 'Select all shown', onclick: () => { rows.forEach(r => selected.set(r.id, { id: r.id, title: r.title, artist: r.artist })); renderResults(title); } }),
+      n ? el('button', { class: 'btn sm ghost', type: 'button', text: 'Clear selection', onclick: () => { selected.clear(); renderResults(title); } }) : null,
+      artistCtx || n ? el('span', { class: 'push' }, go) : null);
+  };
   fill(host,
-    el('div', { class: 'row', style: 'margin-bottom:10px' }, el('h2', { text: title || 'Results' }), el('span', { class: 'counts', text: `${rows.length} of ${results.length}` }),
-      kinds.length > 2 ? el('span', { class: 'row', style: 'gap:5px;margin-left:auto' }, kinds.map(k => el('button', { class: 'chip' + (k === rFilter ? ' on' : ''), type: 'button', text: k, onclick: () => { rFilter = k; renderResults(title); } }))) : null),
-    el('div', { class: 'grid' }, rows.map(r => el('button', { class: 'card' + (current && current.group_id === r.id ? ' sel' : ''), type: 'button', onclick: () => showGroup(r.id) },
-      r.owned ? el('span', { class: 'own' }, pic('check', 'k'), 'In folder') : null,
-      cover([CAA + '/release-group/' + r.id + '/front-250']),
-      el('span', { class: 'meta' }, el('span', { class: 't', text: r.title, title: r.title }), el('span', { class: 's', text: r.artist }),
-        el('span', { class: 's', text: [r.date.slice(0, 4), typeOf(r)].filter(Boolean).join(' · ') }))))));
+    el('div', { class: 'head' }, el('h2', { text: title || 'Results' }), el('span', { class: 'counts', text: `${rows.length} of ${results.length}` }),
+      kinds.length > 2 ? el('span', { class: 'row push', style: 'gap:5px' }, kinds.map(k => el('button', { class: 'chip' + (k === rFilter ? ' on' : ''), type: 'button', text: k, onclick: () => { rFilter = k; renderResults(title); } }))) : null),
+    bar,
+    el('div', { class: 'grid' }, rows.map(r => {
+      const card = el('div', { class: 'card' + (current && current.group_id === r.id ? ' sel' : '') + (selected.has(r.id) ? ' picked' : '') });
+      const box = el('input', { type: 'checkbox', checked: selected.has(r.id), 'aria-label': 'Select ' + r.title, onchange: ev => {
+        ev.target.checked ? selected.set(r.id, { id: r.id, title: r.title, artist: r.artist }) : selected.delete(r.id);
+        card.classList.toggle('picked', ev.target.checked); clearTimeout(confirming); confirming = null; drawBar(); } });
+      card.append(el('label', { class: 'pick', title: 'Select' }, box),
+        r.owned ? el('span', { class: 'own' + (r.owned.incomplete ? ' incomplete' : '') }, pic('check', 'k'), r.owned.incomplete ? 'Incomplete' : 'In folder') : null,
+        el('button', { class: 'open', type: 'button', onclick: () => showGroup(r.id) }, cover([coverUrl('', r.id, r.artist, r.title, 250)]),
+          el('span', { class: 'meta' }, el('span', { class: 't', text: r.title, title: r.title }), el('span', { class: 's', text: r.artist }),
+            el('span', { class: 's', text: [r.date.slice(0, 4), typeOf(r)].filter(Boolean).join(' · ') }))));
+      return card;
+    })));
+  drawBar();
 }
 async function showArtist(a, all) {
   const info = $('#artistInfo'), m = $('#searchMsg');
-  fill($('#results')); fill($('#detail')); current = null;
+  fill($('#results')); fill($('#detail')); current = null; selected.clear(); artistCtx = { id: a.id, name: a.name };
   fill(info, el('div', { class: 'panel' }, el('div', { class: 'row' }, el('h3', { text: a.name, style: 'font-size:24px' }),
     ...[a.type, a.country, [a.begin, a.end].filter(Boolean).join('–'), a.disambiguation].filter(Boolean).map(t => el('span', { class: 'chip', text: t }))),
     all.length > 1 ? el('div', { class: 'row', style: 'margin-top:10px;gap:6px' }, el('small', { text: 'Not the right artist?' }), ...all.filter(x => x.id !== a.id).slice(0, 4).map(x =>
       el('button', { class: 'chip', type: 'button', text: x.name + (x.disambiguation ? ' · ' + x.disambiguation : ''), onclick: () => showArtist(x, all) }))) : null));
-  fill(m, el('div', { class: 'msg' }, el('span', { class: 'spin' }), ` Loading ${a.name}'s albums…`));
+  fill(m, el('div', { class: 'msg' }, el('span', { class: 'spin' }), ` Loading ${a.name}'s releases…`));
   try {
     const d = await api('/api/artist/' + a.id);
-    fill(m); results = d.albums;
-    rFilter = results.some(r => typeOf(r) === 'Album') ? 'Album' : 'All';
-    info.firstChild.append(discoPanel(a, results)); renderResults('Albums');
+    fill(m); results = d.albums; rFilter = 'All'; renderResults('Releases');
   } catch (e) { fill(m, el('div', { class: 'msg err', text: e.message })); }
-}
-function discoPanel(artist, albums) {
-  const kinds = {}; albums.forEach(r => { const k = typeOf(r); (kinds[k] = kinds[k] || []).push(r); });
-  const sel = new Set(['Album', 'EP'].filter(k => kinds[k])); if (!sel.size && Object.keys(kinds)[0]) sel.add(Object.keys(kinds)[0]);
-  const skip = el('input', { type: 'checkbox', id: 'discoSkip', checked: true });
-  const fmt = el('select', { id: 'discoFmt', 'aria-label': 'Format' }, config.formats.map(f => el('option', { value: f, text: f.toUpperCase(), selected: f === store.get('fmt', config.format) })));
-  const chips = el('div', { class: 'row', style: 'gap:5px' }), count = el('span', { class: 'counts' }), go = el('button', { class: 'btn go', type: 'button' });
-  let armed = null;
-  const picked = () => albums.filter(r => sel.has(typeOf(r))), todo = () => picked().filter(r => !(skip.checked && r.owned));
-  const disarm = () => { clearTimeout(armed); armed = null; };
-  const draw = () => {
-    fill(chips, Object.keys(kinds).map(k => el('button', { class: 'chip' + (sel.has(k) ? ' on' : ''), type: 'button', text: `${k} ${kinds[k].length}`, onclick: () => { sel.has(k) ? sel.delete(k) : sel.add(k); disarm(); draw(); } })));
-    const n = todo().length; count.textContent = `${picked().length} selected, ${picked().filter(r => r.owned).length} already in the folder`;
-    fill(go, pic('download', 'k'), armed ? `Confirm: queue ${n}` : `Download discography (${n})`); go.disabled = !n; go.classList.toggle('hot', !!armed); go.classList.toggle('go', !armed);
-  };
-  skip.addEventListener('change', () => { disarm(); draw(); });
-  go.addEventListener('click', async () => {
-    if (!armed) { armed = setTimeout(() => { armed = null; draw(); }, 4000); draw(); return; }
-    disarm(); go.disabled = true;
-    try {
-      const r = await api('/api/discography', { artist_id: artist.id, name: artist.name, types: [...sel], format: fmt.value, skip_owned: skip.checked });
-      toast(`Queuing ${r.batch.total} releases`, 'ok', { label: 'View queue', fn: () => show('queue') }); tick();
-    } catch (e) { toast(e.message, 'error'); }
-    draw();
-  });
-  draw();
-  return el('div', { style: 'margin-top:14px;padding-top:12px;border-top:1px solid var(--t2);display:grid;gap:10px' },
-    el('div', { class: 'row' }, el('b', { text: 'Download the whole discography' }), count), chips,
-    el('div', { class: 'row' }, fmt, el('label', {}, skip, ' Skip albums already in the folder'), go));
 }
 async function showGroup(gid) {
   const host = $('#detail');
@@ -159,14 +163,12 @@ async function showRelease(mbid, editions) {
   } catch (e) { fill(host, el('div', { class: 'msg err', text: e.message })); }
 }
 function renderDetail(a, editions) {
-  const fmtSel = el('select', { id: 'fmt', 'aria-label': 'Format' }, config.formats.map(f => el('option', { value: f, selected: f === store.get('fmt', config.format), text: { mp3: 'MP3 320k', m4a: 'M4A (AAC)', opus: 'Opus (original quality)' }[f] || f })));
-  fmtSel.addEventListener('change', () => store.set('fmt', fmtSel.value));
   const status = el('div');
-  const dl = el('button', { class: 'btn go', type: 'button' }, pic('download', 'k'), 'Download album');
+  const dl = el('button', { class: 'btn go', type: 'button' }, pic('download', 'k'), a.owned ? 'Download again' : 'Download album');
   dl.addEventListener('click', async () => {
     dl.disabled = true;
     try {
-      await api('/api/download', { mbid: a.mbid, format: fmtSel.value });
+      await api('/api/download', { mbid: a.mbid });
       toast(`Queued ${a.title}`, 'ok', { label: 'View queue', fn: () => show('queue') }); tick();
     } catch (e) { fill(status, el('div', { class: 'msg err', text: e.message })); toast(e.message, 'error'); }
     dl.disabled = false;
@@ -174,45 +176,51 @@ function renderDetail(a, editions) {
   const edSel = editions.length > 1 ? el('select', { 'aria-label': 'Edition', onchange: ev => showRelease(ev.target.value, editions) },
     editions.map(e => el('option', { value: e.id, selected: e.id === a.mbid, text: [e.date, e.country, e.format, e.tracks + ' tracks', e.status !== 'Official' ? e.status : '', e.disambiguation].filter(Boolean).join(' · ') }))) : null;
   const multi = a.disc_total > 1;
-  fill($('#detail'), el('div', { class: 'panel detail' }, cover([CAA + '/release/' + a.mbid + '/front-500', a.group_id ? CAA + '/release-group/' + a.group_id + '/front-500' : '']),
+  fill($('#detail'), el('div', { class: 'panel detail' }, cover([coverUrl(a.mbid, a.group_id, a.artist, a.title, 500)]),
     el('div', { style: 'min-width:0' },
       el('h3', { text: a.title, style: 'font-size:24px' }), el('div', { class: 'hint', text: a.artist, style: 'font-size:15px' }),
       el('div', { class: 'chips' }, [(a.original_date || a.date || '').slice(0, 4), a.label, `${a.tracks.length} tracks`, dur(a.total_seconds), ...a.genres.slice(0, 3)].filter(Boolean).map(t => el('span', { class: 'chip', text: t })),
         el('a', { class: 'chip', href: 'https://musicbrainz.org/release/' + a.mbid, target: '_blank', rel: 'noopener', text: 'MusicBrainz ↗' })),
-      a.owned ? el('div', { class: 'msg', style: 'margin-bottom:10px;border-color:var(--mint)' }, pic('check', 'c'), ` Already in the folder: ${a.owned.tracks} of ${a.tracks.length} tracks (${bytes(a.owned.size)}). Finished tracks are skipped.`) : null,
+      a.owned ? el('div', { class: 'msg', style: `margin-bottom:10px;border-color:var(--${a.owned.incomplete ? 'amber' : 'mint'})` }, pic('check', 'c'),
+        a.owned.incomplete ? ' Incomplete: some tracks are missing. Download again to fill them in.' : ` Already in the folder (${a.owned.tracks} tracks, ${bytes(a.owned.size)}). Downloading again replaces everything.`) : null,
       edSel ? el('div', { class: 'row', style: 'margin-bottom:8px' }, el('small', { text: 'Edition' }), edSel) : null,
-      el('div', { class: 'row' }, fmtSel, dl),
+      el('div', { class: 'row' }, dl),
       el('details', {}, el('summary', { text: `Tracklist (${a.tracks.length})` }), el('div', { class: 'scroll-x' }, el('table', { class: 'tl' },
         el('tbody', {}, a.tracks.map(t => el('tr', {}, el('td', { class: 'n', text: (multi ? t.disc + '-' : '') + t.number }), el('td', {}, t.title, t.artist ? el('small', { text: t.artist }) : null), el('td', { class: 'd', text: mmss(t.seconds) }))))))),
       status, el('p', { class: 'hint', text: 'Saves to ' + a.folder }))));
 }
-const jobNodes = new Map(), expanded = new Set(store.get('expanded', [])), tabOf = {};
-let busy = false;
+const jobNodes = new Map(), tabOf = {};
+let busy = false, openJob = null;
 function renderBatches(batches) {
   const sig = JSON.stringify(batches.map(b => [b.id, b.resolved, b.queued, b.skipped, b.failed, b.status, b.current]));
   if (renderBatches.sig === sig) return; renderBatches.sig = sig;
   fill($('#batches'), batches.map(b => {
     const pct = b.total ? Math.round(100 * b.resolved / b.total) : 0, run = b.status === 'running';
     return el('div', { class: 'panel' },
-      el('div', { class: 'row' }, el('h3', { text: 'Discography: ' + b.artist }), el('span', { class: 'st ' + (run ? '' : b.status), text: b.status }),
-        run ? el('button', { class: 'btn sm bad', type: 'button', style: 'margin-left:auto', text: 'Stop', onclick: async () => { try { await api('/api/batches/' + b.id + '/cancel', {}); } catch (e) { toast(e.message, 'error'); } tick(); } }) : null),
+      el('div', { class: 'row' }, el('h3', { text: 'Queuing: ' + b.artist }), el('span', { class: 'st ' + (run ? '' : b.status), text: b.status }),
+        run ? el('button', { class: 'btn sm bad push', type: 'button', text: 'Stop', onclick: async () => { try { await api('/api/batches/' + b.id + '/cancel', {}); } catch (e) { toast(e.message, 'error'); } tick(); } }) : null),
       el('div', { class: 'bar' + (run ? '' : ' done') }, el('i', { style: `width:${pct}%` }), el('b', { text: `${b.resolved}/${b.total}` })),
       el('div', { class: 'sum', text: `${b.queued} queued, ${b.skipped} already in the folder, ${b.failed} failed` + (b.current ? `. Looking up ${b.current}` : '') }));
   }));
+}
+function syncOpen() {
+  jobNodes.forEach((n, id) => { n.root.classList.toggle('open', id === openJob); n.more.textContent = id === openJob ? 'Hide' : 'Details'; });
 }
 function applyJobs(jobs, batches = []) {
   renderBatches(batches);
   const act = jobs.filter(j => j.status === 'queued' || j.status === 'running'), expanding = batches.some(b => b.status === 'running');
   busy = act.length > 0 || expanding;
   const bq = $('#bQueue'); bq.hidden = !(act.length || expanding); bq.textContent = act.length || '…';
-  $('#queueCounts').textContent = jobs.length ? `${jobs.length} jobs, ${act.length} active` : '';
+  $('#queueCounts').textContent = jobs.length ? `${jobs.length} downloads, ${act.length} active` : '';
   const run = jobs.find(j => j.status === 'running');
   $('#sMain').textContent = run ? `Downloading ${run.title}: ${run.finished}/${run.total}` + (act.length > 1 ? ` (+${act.length - 1} queued)` : '') : act.length ? `${act.length} waiting` : 'Idle';
   const host = $('#jobs'), ids = jobs.map(j => j.id), nodes = jobs.map(j => updateJob(j));
   for (const id of [...jobNodes.keys()]) if (!ids.includes(id)) { jobNodes.get(id).root.remove(); jobNodes.delete(id); }
-  if (!jobs.length) return fill(host, el('div', { class: 'panel', style: 'text-align:center;color:var(--c2)' }, 'Nothing queued. Find an album in Discover and press Download.'));
+  if (!jobs.length) return fill(host, el('div', { class: 'panel empty' }, 'Nothing queued. Find an album in Discover and press Download.'));
   if (host.firstChild && !host.firstChild.classList.contains('job')) host.replaceChildren();
   nodes.forEach((n, i) => { if (host.children[i] !== n) host.insertBefore(n, host.children[i] || null); });
+  if (openJob && !ids.includes(openJob)) { openJob = null; fill($('#jobDetail')); delete $('#jobDetail').dataset.job; }
+  syncOpen();
 }
 function updateJob(j) {
   let n = jobNodes.get(j.id);
@@ -220,24 +228,21 @@ function updateJob(j) {
     n = { rows: new Map() };
     n.name = el('div', { class: 'name' }); n.by = el('div', { class: 'by' }); n.st = el('span', { class: 'st' });
     n.cancel = el('button', { class: 'btn sm bad', type: 'button', text: 'Cancel', onclick: async () => { try { await api('/api/jobs/' + j.id + '/cancel', {}); } catch (e) { toast(e.message, 'error'); } tick(); } });
-    n.retry = el('button', { class: 'btn sm hot', type: 'button', text: 'Retry', onclick: async () => { try { await api('/api/jobs/' + j.id + '/retry', {}); toast('Retry queued', 'ok'); } catch (e) { toast(e.message, 'error'); } tick(); } });
-    n.more = el('button', { class: 'btn sm ghost', type: 'button', onclick: () => { expanded.has(j.id) ? expanded.delete(j.id) : expanded.add(j.id); store.set('expanded', [...expanded]); n.sync(); tick(); } });
+    n.retry = el('button', { class: 'btn sm hot', type: 'button', text: 'Retry', onclick: async () => { try { await api('/api/jobs/' + j.id + '/retry', {}); toast('Download started again', 'ok'); } catch (e) { toast(e.message, 'error'); } tick(); } });
+    n.more = el('button', { class: 'btn sm ghost', type: 'button', text: 'Details', onclick: () => { openJob = openJob === j.id ? null : j.id; if (!openJob) { fill($('#jobDetail')); delete $('#jobDetail').dataset.job; } syncOpen(); tick().then(() => openJob && $('#jobDetail').scrollIntoView({ block: 'nearest' })); } });
     n.fillBar = el('i'); n.barText = el('b'); n.bar = el('div', { class: 'bar' }, n.fillBar, n.barText);
-    n.sum = el('div', { class: 'sum' }); n.err = el('div', { class: 'msg err', style: 'margin-top:8px', hidden: true });
-    n.tabs = el('div', { class: 'jtabs' }); n.pane = el('div'); n.detail = el('div', { hidden: true }, n.tabs, n.pane);
-    n.root = el('article', { class: 'panel job' }, el('div', { class: 'jh' }, cover([CAA + '/release/' + j.mbid + '/front-250', j.group_id ? CAA + '/release-group/' + j.group_id + '/front-250' : '']),
-      el('div', { style: 'min-width:0' }, n.name, n.by), el('div', { class: 'acts' }, n.st, n.cancel, n.retry, n.more)), n.bar, n.sum, n.err, n.detail);
-    n.sync = () => { const open = expanded.has(j.id); n.more.textContent = open ? 'Hide' : 'Details'; n.detail.hidden = !open; };
-    n.sync(); jobNodes.set(j.id, n);
+    n.sum = el('div', { class: 'sum' }); n.err = el('div', { class: 'msg err', hidden: true });
+    n.root = el('article', { class: 'job' }, el('div', { class: 'jcover' }, cover([coverUrl(j.mbid, j.group_id, j.artist, j.title, 250)]), n.st),
+      el('div', { class: 'jbody' }, n.name, n.by, n.bar, n.sum, n.err, el('div', { class: 'acts' }, n.cancel, n.retry, n.more)));
+    jobNodes.set(j.id, n);
   }
   const pct = j.total ? Math.round(100 * j.finished / j.total) : 0, active = j.status === 'running' || j.status === 'queued';
-  n.root.className = 'panel job ' + j.status; n.name.textContent = j.title; n.name.title = j.title;
-  n.by.textContent = [j.artist, j.year, j.format.toUpperCase()].filter(Boolean).join(' · ');
+  n.name.textContent = j.title; n.name.title = j.title; n.by.textContent = [j.artist, j.year].filter(Boolean).join(' · ');
   n.st.textContent = j.status; n.st.className = 'st ' + j.status; n.cancel.hidden = !active; n.retry.hidden = active;
   n.bar.className = 'bar ' + (active ? '' : j.status); n.fillBar.style.width = (j.status === 'queued' ? 0 : pct) + '%'; n.barText.textContent = j.status === 'queued' ? 'waiting' : `${j.finished}/${j.total}`;
   const eta = j.status === 'running' && j.finished > 0 ? (j.total - j.finished) * (j.elapsed / j.finished) : null;
-  n.sum.textContent = [j.started ? dur(j.elapsed) + ' elapsed' : '', eta != null ? `~${dur(eta)} left` : '', j.bytes ? bytes(j.bytes) + ' written' : '', j.failed ? j.failed + ' failed' : '', j.retries ? j.retries + ' retries' : ''].filter(Boolean).join(' · ');
-  n.err.hidden = !j.error; n.err.textContent = j.error; n.sync();
+  n.sum.textContent = [j.started ? dur(j.elapsed) : '', eta != null ? `~${dur(eta)} left` : '', j.bytes ? bytes(j.bytes) : '', j.failed ? j.failed + ' failed' : '', j.retries ? j.retries + ' retries' : ''].filter(Boolean).join(' · ');
+  n.err.hidden = !j.error; n.err.textContent = j.error;
   return n.root;
 }
 function trackRow(n, t) {
@@ -245,17 +250,24 @@ function trackRow(n, t) {
   if (!r) { r = { ico: el('span', { class: 'ico' }), title: el('td'), src: el('td'), size: el('td', { class: 'd' }) }; r.tr = el('tr', {}, el('td', {}, r.ico), el('td', { class: 'n', text: t.n }), r.title, r.src, r.size); n.rows.set(t.n, r); }
   r.ico.className = 'ico ' + t.state; r.tr.className = t.state === 'failed' ? 'err' : '';
   fill(r.title, t.title, t.state !== 'done' && t.text ? el('small', { text: t.text }) : null);
-  fill(r.src, t.channel ? el('a', { href: t.url, target: '_blank', rel: 'noopener', text: t.channel }) : null, t.acodec ? el('small', { text: `${t.acodec}${t.src_kbps ? ' ' + t.src_kbps + 'k' : ''}` }) : null);
+  fill(r.src, t.channel ? el('a', { href: t.url, target: '_blank', rel: 'noopener', text: t.channel }) : null, t.acodec ? el('small', { text: `source ${t.acodec}${t.src_kbps ? ' ' + t.src_kbps + 'k' : ''} → saved as mp3` }) : null);
   fill(r.size, t.out_bytes ? bytes(t.out_bytes) : t.src_bytes ? bytes(t.src_bytes) : '');
   return r.tr;
 }
-function renderDetailPane(n, d) {
+function renderDetailPane(d) {
+  const n = jobNodes.get(d.id), host = $('#jobDetail'); if (!n) return;
+  if (host.dataset.job !== d.id) {
+    host.dataset.job = d.id;
+    fill(host, el('div', { class: 'panel' }, el('div', { class: 'row' }, el('h3', { id: 'dTitle' }), el('button', { class: 'btn sm ghost push', type: 'button', text: 'Close', onclick: () => { openJob = null; fill(host); delete host.dataset.job; syncOpen(); } })),
+      el('div', { class: 'jtabs', id: 'dTabs' }), el('div', { id: 'dPane' })));
+  }
   const tab = tabOf[d.id] || 'tracks';
-  fill(n.tabs, [['tracks', 'Tracks'], ['log', 'Log']].map(([k, l]) => el('button', { class: 'chip' + (k === tab ? ' on' : ''), type: 'button', text: l, onclick: () => { tabOf[d.id] = k; renderDetailPane(n, d); } })));
-  if (tab === 'tracks') fill(n.pane, el('div', { class: 'scroll-x' }, el('table', { class: 'tl' }, el('thead', {}, el('tr', {}, ['', '#', 'Title', 'Source', 'Size'].map(h => el('th', { text: h })))), el('tbody', {}, d.tracks.map(t => trackRow(n, t))))));
-  else { const box = el('div', { class: 'jlog' }, d.log.map(e => el('div', { class: e.level }, el('time', { text: clock(e.t, true) }), e.msg))); fill(n.pane, box); box.scrollTop = box.scrollHeight; }
+  $('#dTitle').textContent = `${d.artist} - ${d.title}`;
+  fill($('#dTabs'), [['tracks', 'Tracks'], ['log', 'Log']].map(([k, l]) => el('button', { class: 'chip' + (k === tab ? ' on' : ''), type: 'button', text: l, onclick: () => { tabOf[d.id] = k; renderDetailPane(d); } })));
+  if (tab === 'tracks') fill($('#dPane'), el('div', { class: 'scroll-x' }, el('table', { class: 'tl' }, el('thead', {}, el('tr', {}, ['', '#', 'Title', 'Source', 'Size'].map(h => el('th', { text: h })))), el('tbody', {}, d.tracks.map(t => trackRow(n, t))))));
+  else { const box = el('div', { class: 'jlog' }, d.log.map(e => el('div', { class: e.level }, el('time', { text: clock(e.t, true) }), e.msg))); fill($('#dPane'), box); box.scrollTop = box.scrollHeight; }
 }
-$('#clearBtn').addEventListener('click', async () => { try { const r = await api('/api/jobs/clear', {}); toast(`Cleared ${r.cleared} finished jobs`, 'ok'); } catch (e) { toast(e.message, 'error'); } tick(); });
+$('#clearBtn').addEventListener('click', async () => { try { const r = await api('/api/jobs/clear', {}); toast(`Cleared ${r.cleared} finished downloads`, 'ok'); } catch (e) { toast(e.message, 'error'); } tick(); });
 const LEVELS = ['debug', 'info', 'ok', 'warn', 'error'];
 let logs = [], lastLog = 0, unseen = 0, follow = true, wiped = 0;
 const lvOn = new Set(store.get('levels', LEVELS));
@@ -286,9 +298,9 @@ async function tick() {
   try {
     const [j, l, s] = await Promise.all([api('/api/jobs'), api('/api/logs?since=' + lastLog), ticks++ % 3 === 0 ? api('/api/stats') : null]);
     offline = false; if (s) applyStats(s); applyJobs(j.jobs, j.batches); applyLogs(l);
-    if (view === 'queue') {
-      const open = j.jobs.filter(x => expanded.has(x.id));
-      (await Promise.all(open.map(x => api('/api/jobs/' + x.id).catch(() => null)))).forEach(d => { if (d && jobNodes.get(d.id)) renderDetailPane(jobNodes.get(d.id), d); });
+    if (view === 'queue' && openJob) {
+      const d = await api('/api/jobs/' + openJob).catch(() => null);
+      if (d) renderDetailPane(d);
     }
   } catch (e) {
     if (!offline) toast('Lost contact with the server; retrying…', 'error');
@@ -299,7 +311,6 @@ async function tick() {
 
 document.addEventListener('keydown', ev => { if (ev.key === '/' && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) { ev.preventDefault(); show('discover'); $('#artist').focus(); } });
 (async () => {
-  try { config = await api('/api/config'); } catch (_) {}
   show((location.hash || '').slice(1) || store.get('view', 'discover'));
   tick();
 })();

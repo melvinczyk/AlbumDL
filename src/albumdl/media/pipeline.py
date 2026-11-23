@@ -13,7 +13,9 @@ from ..sources import musicbrainz as mb, youtube
 from . import tagging
 
 BAD_CHARS = '\\/:*?"<>|\n\r\t'
-ATTEMPTS = 3
+ATTEMPTS = 5
+ROUNDS = 3
+INCOMPLETE = "INCOMPLETE.txt"
 
 
 def safe(s: str) -> str:
@@ -24,7 +26,6 @@ def safe(s: str) -> str:
 @dataclass
 class Options:
     out_root: str
-    fmt: str = "mp3"
     jobs: int = 4
     cancel: threading.Event = field(default_factory=threading.Event)
 
@@ -57,7 +58,7 @@ def retrying(fn: Callable, cancel: threading.Event, attempts: int = 3):
 
 
 def publish(src: str, dst: str) -> None:
-    # copy to .part then rename, so the music folder never holds half a track
+    # copy to .part then rename, so the music folder never holds half a track (and an old file is replaced in one step)
     part = dst + ".part"
     try:
         shutil.copyfile(src, part)
@@ -69,8 +70,7 @@ def publish(src: str, dst: str) -> None:
 
 def run(album: mb.Album, opts: Options, log: Callable[[str], None] = print,
         on_track: Optional[Callable[..., None]] = None) -> Tuple[int, int]:
-    fmt = opts.fmt
-    bitrate = tagging.DEFAULT_BITRATE[fmt]
+    """Download an album, replacing anything already there. Returns (done, failed)."""
     folder = album_folder(album, opts.out_root)
     total = len(album.tracks)
     note = on_track or (lambda *_, **__: None)
@@ -82,21 +82,9 @@ def run(album: mb.Album, opts: Options, log: Callable[[str], None] = print,
 
     def target(t: mb.Track) -> str:
         name = f"{t.disc}-{t.number:02d}" if album.disc_total > 1 else f"{t.number:02d}"
-        return os.path.join(folder, f"{name} - {safe(t.title)}.{fmt}")
+        return os.path.join(folder, f"{name} - {safe(t.title)}.mp3")
 
-    log(f"{album.artist} - {album.title} ({album.date or '?'}), {total} tracks -> {folder} [{fmt}]")
-
-    todo = []
-    for i, t in enumerate(album.tracks, 1):
-        if os.path.exists(target(t)):
-            log(f"[{i}/{total}] exists: {os.path.basename(target(t))}")
-            note(i, "exists", "already downloaded", out_bytes=os.path.getsize(target(t)))
-        else:
-            todo.append((i, t))
-    if not todo:
-        log(f"\nDone: all {total} tracks already downloaded")
-        return total, 0
-
+    log(f"{album.artist} - {album.title} ({album.date or '?'}), {total} tracks -> {folder}")
     os.makedirs(folder, exist_ok=True)
     for stale in glob.glob(os.path.join(glob.escape(folder), "*.part")):
         os.remove(stale)
@@ -104,14 +92,13 @@ def run(album: mb.Album, opts: Options, log: Callable[[str], None] = print,
     def get_cover() -> bytes:
         path = os.path.join(folder, "cover.jpg")
         try:
-            if os.path.exists(path):
+            data = tagging.fetch_cover(album)
+            if data:
+                with open(path + ".part", "wb") as f:
+                    f.write(data)
+                os.replace(path + ".part", path)
+            elif os.path.exists(path):
                 data = open(path, "rb").read()
-            else:
-                data = tagging.fetch_cover(album)
-                if data:
-                    with open(path + ".part", "wb") as f:
-                        f.write(data)
-                    os.replace(path + ".part", path)
             say("cover: " + (f"{len(data) // 1024} KB" if data else "not found"))
             return tagging.to_jpeg(data, max_side=1400) if data else b""
         except Exception as exc:
@@ -155,38 +142,55 @@ def run(album: mb.Album, opts: Options, log: Callable[[str], None] = print,
                 src, acodec, abr = youtube.download(url, td)
                 info.update(t_dl=time.time() - t1, src_bytes=os.path.getsize(src), acodec=acodec, src_kbps=round(abr or 0))
                 note(i, "working", "encoding and tagging", **info)
-                tmp = os.path.join(td, f"track.{fmt}")
-                tagging.encode(src, tmp, fmt, bitrate, acodec)
-                tagging.tag(tmp, fmt, album, t, cover_job.result(), url)
+                tmp = os.path.join(td, "track.mp3")
+                tagging.encode(src, tmp)
+                tagging.tag(tmp, album, t, cover_job.result(), url)
                 info.update(out_bytes=os.path.getsize(tmp))
                 publish(tmp, target(t))
             say(f"[{i}/{total}] {t.title} <- {entry.get('title')} ({who}) done ({info['src_bytes'] // 1024} KB in {info['t_dl']:.1f}s)")
             note(i, "done", f"{who}: {why}", **info)
             return True
 
-        def work(i: int, t: mb.Track) -> bool:
+        def work(i: int, t: mb.Track) -> str:
             for n in range(1, ATTEMPTS + 1):
                 if opts.cancel.is_set():
                     note(i, "cancelled", "cancelled")
-                    return False
+                    return "cancelled"
                 try:
-                    return attempt(i, t, n)
+                    return "ok" if attempt(i, t, n) else "missing"
                 except Exception as exc:
                     msg = str(exc).splitlines()[0][:200] if str(exc) else repr(exc)
                     if n == ATTEMPTS:
                         say(f"[{i}/{total}] FAILED {t.title}: {msg}")
                         note(i, "failed", msg, attempts=n)
-                        return False
+                        return "error"
                     say(f"[{i}/{total}] retry {n}: {t.title} ({msg})")
                     note(i, "working", f"retrying after error: {msg}", attempts=n)
                     wait_online(opts.cancel)
-                    opts.cancel.wait(3 * n)
-            return False
+                    opts.cancel.wait(min(90, 8 * 2 ** (n - 1)))
+            return "error"
 
-        with ThreadPoolExecutor(max_workers=max(1, opts.jobs)) as pool:
-            results = list(pool.map(lambda it: work(*it), todo))
+        outcome = {}
+        pending = list(enumerate(album.tracks, 1))
+        for rnd in range(1, ROUNDS + 1):
+            with ThreadPoolExecutor(max_workers=max(1, opts.jobs)) as pool:
+                for (i, _), result in zip(pending, pool.map(lambda it: work(*it), pending)):
+                    outcome[i] = result
+            pending = [(i, t) for i, t in pending if outcome[i] == "error"]
+            if not pending or rnd == ROUNDS or opts.cancel.is_set():
+                break
+            say(f"{len(pending)} tracks failed; trying them again in {60 * rnd}s")
+            opts.cancel.wait(60 * rnd)
 
-    done = sum(results) + (total - len(todo))
-    failed = len(results) - sum(results)
-    log(f"\nDone: {done}/{total} tracks, {failed} failed")
-    return done, failed
+    missing = [(i, t) for i, t in enumerate(album.tracks, 1) if outcome.get(i) != "ok"]
+    marker = os.path.join(folder, INCOMPLETE)
+    if missing:
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write("This album is incomplete. These tracks could not be downloaded:\n\n")
+            f.writelines(os.path.basename(target(t))[:-4] + "\n" for _, t in missing)
+            f.write("\nDownload the album again to fill them in.\n")
+    elif os.path.exists(marker):
+        os.remove(marker)
+    done = total - len(missing)
+    log(f"\nDone: {done}/{total} tracks, {len(missing)} failed")
+    return done, len(missing)

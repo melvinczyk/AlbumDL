@@ -9,16 +9,15 @@ from urllib.parse import urlparse
 
 from fastapi import Body, Depends, FastAPI, Path as PathParam, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException
 
-from ..media import pipeline
+from ..media import pipeline, tagging
 from ..sources import musicbrainz as mb
 from .jobs import FINISHED, EventLog, JobManager, Library
 
 WEB = Path(__file__).parent.parent / "web"
-FORMATS = ("mp3", "m4a", "opus")
 MBID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 MbId = Annotated[str, PathParam(pattern=f"^{MBID}$")]
 JobId = Annotated[str, PathParam(pattern="^[0-9a-f]{10}$")]
@@ -27,7 +26,6 @@ JobId = Annotated[str, PathParam(pattern="^[0-9a-f]{10}$")]
 @dataclass(frozen=True)
 class Settings:
     out_root: str = "./out"
-    fmt: str = "mp3"
     jobs: int = 4
     host: str = "127.0.0.1"
     port: int = 8080
@@ -35,8 +33,7 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         env = os.environ.get
-        return cls(env("OUTPUT_DIR", "./out"), env("ALBUMDL_FORMAT", "mp3"), int(env("ALBUMDL_JOBS", "4")),
-                   env("ALBUMDL_HOST", "127.0.0.1"), int(env("ALBUMDL_PORT", "8080")))
+        return cls(env("OUTPUT_DIR", "./out"), int(env("ALBUMDL_JOBS", "4")), env("ALBUMDL_HOST", "127.0.0.1"), int(env("ALBUMDL_PORT", "8080")))
 
 
 def same_origin(request: Request) -> None:
@@ -80,14 +77,8 @@ def create_app(settings: Settings) -> FastAPI:
     async def no_store(request, call_next):
         response = await call_next(request)
         if request.url.path == "/" or request.url.path.startswith("/api/"):
-            response.headers["Cache-Control"] = "no-store"
+            response.headers.setdefault("Cache-Control", "no-store")
         return response
-
-    def format_of(body: dict) -> str:
-        fmt = body.get("format") or settings.fmt
-        if fmt not in FORMATS:
-            raise HTTPException(400, "bad format")
-        return fmt
 
     def find_job(jid: str):
         job = jobs.jobs.get(jid)
@@ -101,7 +92,7 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/api/config")
     def config():
-        return {"formats": FORMATS, "format": settings.fmt, "out_root": settings.out_root}
+        return {"out_root": settings.out_root}
 
     @app.get("/api/stats")
     def stats():
@@ -116,6 +107,15 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/api/logs")
     def logs(since: int = 0):
         return events.since(since)
+
+    @app.get("/api/cover")
+    def cover(release: str = "", group: str = "", artist: str = "", title: str = "", size: int = 250):
+        if not all(re.fullmatch(MBID, x) for x in (release, group) if x):
+            raise HTTPException(400, "bad id")
+        data = tagging.cover_for(release, group, artist[:120], title[:120], 500 if size > 250 else 250)
+        if not data:
+            raise HTTPException(404, "no cover")
+        return Response(data, media_type=("image/png" if data.startswith(b"\x89PNG") else "image/jpeg"), headers={"Cache-Control": "public, max-age=86400"})
 
     @app.get("/api/search")
     @guarded
@@ -154,7 +154,7 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/api/release/{rid}")
     @guarded
     def release(rid: MbId):
-        album = mb.get_release(rid, full=False)
+        album = mb.get_release(rid)
         folder = pipeline.album_folder(album, settings.out_root)
         return {
             "mbid": album.mbid, "group_id": album.group_id, "title": album.title, "artist": album.artist,
@@ -180,20 +180,17 @@ def create_app(settings: Settings) -> FastAPI:
         mbid = str(body.get("mbid", "")).lower()
         if not re.fullmatch(MBID, mbid):
             raise HTTPException(400, "bad release id")
-        return {"job": jobs.submit(mb.get_release(mbid, full=False), format_of(body)).summary()}
+        return {"job": jobs.submit(mb.get_release(mbid)).summary()}
 
     @app.post("/api/discography")
     @guarded
     def discography(body: dict = Body(...)):
-        artist_id = str(body.get("artist_id", "")).lower()
-        if not re.fullmatch(MBID, artist_id):
-            raise HTTPException(400, "bad artist id")
-        types = {str(t) for t in body.get("types", [])}
-        groups = [r for r in mb.artist_albums(artist_id) if mb.group_kind(r) in types][:150]
-        if not groups:
-            raise HTTPException(400, "nothing to download for those types")
+        groups = [{"id": str(g.get("id", "")).lower(), "title": str(g.get("title", "")), "artist": str(g.get("artist", ""))}
+                  for g in body.get("groups", []) if isinstance(g, dict)][:150]
+        if not groups or not all(re.fullmatch(MBID, g["id"]) for g in groups):
+            raise HTTPException(400, "nothing valid to download")
         name = str(body.get("name") or groups[0]["artist"])[:120]
-        return {"batch": jobs.discography(name, groups, format_of(body), bool(body.get("skip_owned", True))).summary()}
+        return {"batch": jobs.discography(name, groups, bool(body.get("skip_owned", True))).summary()}
 
     @app.post("/api/batches/{bid}/cancel")
     def cancel_batch(bid: JobId):

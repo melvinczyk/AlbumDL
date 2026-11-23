@@ -16,7 +16,7 @@ sudo docker compose up -d --build
 ```
 
 Open `http://<server-ip>:8080`. There is no login, so keep it on your home network.
-Edit `docker-compose.yml` to change the format (`mp3`, `m4a`, `opus`) or the number of parallel downloads.
+Edit `docker-compose.yml` to change the number of parallel downloads. Set `CONTACT` in `.env` to your email or a URL so MusicBrainz can identify the app.
 
 To update yt-dlp, rebuild: `docker compose build --no-cache && docker compose up -d`.
 
@@ -34,5 +34,6 @@ OUTPUT_DIR=./out .venv/bin/albumdl
 
 - Search an artist to see their albums, or an artist and album to find one release. You can also paste a MusicBrainz link.
 - Albums already in the folder are marked **In folder**.
-- You can download an artist's entire discography.
+- Tick the box on any album, EP or single and press **Download selected**, or press **Download discography** on an artist page to queue everything shown. Downloading an album that is already there replaces it.
+- If a track still fails after many retries, the album folder gets an `INCOMPLETE.txt` listing what is missing, and the album is tagged **Incomplete**.
 - `Queue` shows progress and `Console` shows the log.

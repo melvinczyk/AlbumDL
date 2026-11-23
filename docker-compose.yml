@@ -8,5 +8,5 @@ services:
     volumes:
       - ${MUSIC_DIR:?set MUSIC_DIR in .env}:/music
     environment:
-      ALBUMDL_FORMAT: mp3
       ALBUMDL_JOBS: 4
+      ALBUMDL_CONTACT: ${CONTACT:-}

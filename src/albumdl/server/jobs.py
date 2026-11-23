@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 from ..media import pipeline
 from ..sources import musicbrainz as mb
 
-FINISHED = ("done", "failed", "cancelled")
+FINISHED = ("done", "incomplete", "failed", "cancelled")
 AUDIO = (".mp3", ".m4a", ".opus")
 
 
@@ -87,7 +87,8 @@ class Library:
                     size += f.stat().st_size
         except OSError:
             return None
-        return {"tracks": tracks, "size": size} if tracks else None
+        incomplete = os.path.exists(os.path.join(path, album_dir, pipeline.INCOMPLETE))
+        return {"tracks": tracks, "size": size, "incomplete": incomplete} if tracks else None
 
 
 class Job:
@@ -108,7 +109,7 @@ class Job:
         end = self.finished or time.time()
         d = {"id": self.id, "title": self.album.title, "artist": self.album.artist,
              "year": self.album.year, "mbid": self.album.mbid, "group_id": self.album.group_id,
-             "status": self.status, "format": self.opts.fmt,
+             "status": self.status,
              "total": len(self.tracks), "done": self.done, "failed": self.failed,
              "finished": sum(t["state"] in ("done", "exists", "failed", "cancelled") for t in tr),
              "error": self.error, "started": self.started,
@@ -124,16 +125,16 @@ class Job:
 class Batch:
     """One "download the whole discography" request, expanded album by album."""
 
-    def __init__(self, artist: str, total: int, fmt: str):
+    def __init__(self, artist: str, total: int):
         self.id = uuid.uuid4().hex[:10]
-        self.artist, self.total, self.fmt = artist, total, fmt
+        self.artist, self.total = artist, total
         self.queued = self.skipped = self.failed = 0
         self.status = "running"
         self.current = ""
         self.cancel = threading.Event()
 
     def summary(self) -> dict:
-        return {"id": self.id, "artist": self.artist, "total": self.total, "format": self.fmt, "queued": self.queued,
+        return {"id": self.id, "artist": self.artist, "total": self.total, "queued": self.queued,
                 "skipped": self.skipped, "failed": self.failed, "status": self.status, "current": self.current,
                 "resolved": self.queued + self.skipped + self.failed}
 
@@ -150,13 +151,13 @@ class JobManager:
         self.lock = threading.Lock()
         threading.Thread(target=self._worker, daemon=True).start()
 
-    def submit(self, album: mb.Album, fmt: str) -> Job:
-        job = Job(album, pipeline.Options(out_root=self.out_root, fmt=fmt, jobs=self.parallel))
+    def submit(self, album: mb.Album) -> Job:
+        job = Job(album, pipeline.Options(out_root=self.out_root, jobs=self.parallel))
         with self.lock:
             self.jobs[job.id] = job
             self.order.append(job.id)
         self.pending.put(job)
-        self.events.emit("info", "queue", f"queued: {album.artist} - {album.title} [{fmt}]", job.id)
+        self.events.emit("info", "queue", f"queued: {album.artist} - {album.title}", job.id)
         return job
 
     def listing(self) -> List[Job]:
@@ -170,7 +171,7 @@ class JobManager:
         self.events.emit("warn", "queue", f"cancel requested: {job.album.title}", job.id)
 
     def retry(self, job: Job) -> Job:
-        return self.submit(job.album, job.opts.fmt)
+        return self.submit(job.album)
 
     def clear_finished(self) -> int:
         with self.lock:
@@ -187,8 +188,8 @@ class JobManager:
                 "tracks": {"done": sum(t["state"] == "done" for t in tracks), "failed": sum(t["state"] == "failed" for t in tracks)},
                 "bytes_out": sum(t.get("out_bytes") or 0 for t in tracks if t["state"] == "done")}
 
-    def discography(self, artist: str, groups: List[dict], fmt: str, skip_owned: bool) -> Batch:
-        batch = Batch(artist, len(groups), fmt)
+    def discography(self, artist: str, groups: List[dict], skip_owned: bool) -> Batch:
+        batch = Batch(artist, len(groups))
         with self.lock:
             self.batches[batch.id] = batch
         self.events.emit("info", "queue", f"discography: {artist}, {len(groups)} releases")
@@ -200,7 +201,8 @@ class JobManager:
             if batch.cancel.is_set():
                 break
             batch.current = g["title"]
-            if skip_owned and self.library.owned_album(g["artist"], g["title"]):
+            have = self.library.owned_album(g["artist"], g["title"])
+            if skip_owned and have and not have["incomplete"]:
                 batch.skipped += 1
                 self.events.emit("info", "queue", f"discography: skipped {g['title']} (already in the folder)")
                 continue
@@ -208,7 +210,7 @@ class JobManager:
                 editions = mb.group_editions(g["id"])
                 if not editions:
                     raise RuntimeError("no releases listed")
-                self.submit(mb.get_release(editions[0]["id"], full=False), batch.fmt)
+                self.submit(mb.get_release(editions[0]["id"]))
                 batch.queued += 1
             except BaseException as exc:
                 batch.failed += 1
@@ -237,13 +239,9 @@ class JobManager:
                 job.tracks[i].update(state=state, text=text, **info)
 
             try:
-                log("fetching full metadata (credits, ISRCs)…")
-                job.album = mb.get_release(job.album.mbid, full=True)
-                for i, t in enumerate(job.album.tracks, 1):
-                    job.tracks[i]["title"] = t.title
                 job.done, job.failed = pipeline.run(job.album, job.opts, log, on_track)
-                job.status = ("cancelled" if job.opts.cancel.is_set()
-                              else "failed" if job.failed and not job.done else "done")
+                job.status = ("cancelled" if job.opts.cancel.is_set() else "done" if not job.failed
+                              else "failed" if not job.done else "incomplete")
             except BaseException as exc:
                 job.error = str(exc) or repr(exc)
                 job.status = "failed"
