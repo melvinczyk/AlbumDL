@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlparse
 
+import requests
 from fastapi import Body, Depends, FastAPI, Path as PathParam, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -334,6 +336,38 @@ def create_app(settings: Settings) -> FastAPI:
         album.tracks = [track]
         jobs.submit(album)
         return {"queued": 1}
+
+    def apply_cover(artist: str, album: str, data: bytes, square: bool) -> dict:
+        if not data or len(data) > 20_000_000:
+            raise HTTPException(400, "the image is empty or larger than 20 MB")
+        d = library.album_detail(artist[:200], album[:200])
+        if not d:
+            raise HTTPException(404, "album not found")
+        if (pipeline.safe(d["artist"]), pipeline.safe(d["album"])) in {(pipeline.safe(j.album.artist), pipeline.safe(j.album.title)) for j in jobs.listing() if j.status in ("queued", "running")}:
+            raise HTTPException(409, "that album is still downloading")
+        try:
+            tagging.set_cover(os.path.join(settings.out_root, d["artist_dir"], d["album_dir"]), data, square)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        return {"ok": True}
+
+    @app.post("/api/library/cover")
+    async def library_cover(request: Request, artist: str = "", album: str = "", square: int = 1):
+        data = await request.body()
+        return await run_in_threadpool(apply_cover, artist, album, data, bool(square))
+
+    @app.post("/api/library/cover-url")
+    def library_cover_url(body: dict = Body(...)):
+        url = str(body.get("url", "")).strip()
+        if not re.match(r"https?://", url, re.I):
+            raise HTTPException(400, "paste a full image link starting with http")
+        try:
+            with requests.get(url, stream=True, timeout=20, headers={"User-Agent": mb.UA}) as r:
+                r.raise_for_status()
+                data = r.raw.read(20_000_001, decode_content=True)
+        except requests.RequestException as exc:
+            raise HTTPException(400, f"could not download that link ({type(exc).__name__})")
+        return apply_cover(str(body.get("artist", "")), str(body.get("album", "")), data, bool(body.get("square", True)))
 
     @app.get("/api/library/album")
     def library_album(artist: str = "", album: str = ""):

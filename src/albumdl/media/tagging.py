@@ -177,6 +177,48 @@ def _ytmusic(artist: str, title: str, size: int = 1200) -> Optional[bytes]:
     return None
 
 
+def cover_jpeg(data: bytes, square: bool = True, max_side: int = 2400) -> bytes:
+    """Any common image format in, a plain RGB JPEG out."""
+    from PIL import Image, ImageOps
+    try:
+        img = Image.open(io.BytesIO(data))
+        img.load()
+    except Exception:
+        raise ValueError("that file is not an image I can read; try JPG, PNG or WebP")
+    img = ImageOps.exif_transpose(img)
+    if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+        rgba = img.convert("RGBA")
+        img = Image.new("RGB", rgba.size, (255, 255, 255))
+        img.paste(rgba, mask=rgba.split()[3])
+    else:
+        img = img.convert("RGB")
+    if square and img.width != img.height:
+        side = min(img.size)
+        left, top = (img.width - side) // 2, (img.height - side) // 2
+        img = img.crop((left, top, left + side, top + side))
+    if max(img.size) > max_side:
+        img.thumbnail((max_side, max_side), Image.LANCZOS)
+    out = io.BytesIO()
+    img.save(out, "JPEG", quality=95, optimize=True)
+    return out.getvalue()
+
+
+def set_cover(folder: str, data: bytes, square: bool = True) -> None:
+    from mutagen.id3 import APIC, ID3
+    big = cover_jpeg(data, square, 2400)
+    small = cover_jpeg(big, False, 1400)
+    path = os.path.join(folder, "cover.jpg")
+    with open(path + ".part", "wb") as f:
+        f.write(big)
+    os.replace(path + ".part", path)
+    for name in sorted(os.listdir(folder)):
+        if name.lower().endswith(".mp3") and not name.startswith("."):
+            tags = ID3(os.path.join(folder, name))
+            tags.delall("APIC")
+            tags.add(APIC(encoding=3, mime="image/jpeg", type=3, desc="Front Cover", data=small))
+            tags.save(os.path.join(folder, name), v1=2, v2_version=3)
+
+
 def _square(data: bytes) -> bytes:
     from PIL import Image
     img = Image.open(io.BytesIO(data)).convert("RGB")

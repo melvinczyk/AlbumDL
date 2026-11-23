@@ -271,3 +271,8 @@ nav button { transition: background .2s, color .2s; }
 .linkrow { display: grid; gap: 6px; margin-bottom: 12px; }
 .linkrow b { font-size: 14px; overflow-wrap: anywhere; }
 .linkrow input { flex: 1; min-width: 0; border-radius: 10px; }
+
+.coverrow { display: flex; gap: 14px; align-items: flex-start; margin-bottom: 14px; }
+.coverrow .cover { flex: none; width: 96px; border-radius: 10px; border: 2px solid var(--line); }
+.coverset { flex: 1; min-width: 0; }
+.coverset > div input[type=text] { flex: 1; min-width: 160px; border-radius: 999px; min-height: 32px; }

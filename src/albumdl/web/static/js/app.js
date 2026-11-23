@@ -347,8 +347,21 @@ async function openEditor(artist, title) {
   try { d = await api('/api/library/album?' + new URLSearchParams({ artist, album: title })); } catch (e) { return toast(e.message, 'error'); }
   const f = { artist: d.artist, album: d.album, year: d.year, genre: d.genre, label: d.label }, titles = {}, host = $('#libEdit');
   d.tracks.forEach(t => { titles[t.file] = t.title; });
-  let rename = true;
+  let rename = true, square = true;
   const field = (label, key, hint) => { const i = el('input', { type: 'text', value: f[key], 'aria-label': label, placeholder: hint, oninput: () => { f[key] = i.value; } }); return el('label', { class: 'field' }, el('small', { text: label }), i); };
+  const thumb = el('span', { class: 'cover' }), paint = () => fill(thumb, el('img', { alt: '', src: '/api/library/art?' + new URLSearchParams({ artist: d.artist_dir, album: d.album_dir, t: Date.now() }), onload: ev => ev.target.classList.add('ok') }));
+  paint();
+  const applyCover = async job => { try { await job; toast('Cover updated', 'ok'); paint(); loadLibrary(); } catch (e) { toast(e.message, 'error'); } };
+  const fileIn = el('input', { type: 'file', accept: 'image/*', hidden: true, onchange: () => {
+    const file = fileIn.files[0]; if (!file) return;
+    applyCover(fetch('/api/library/cover?' + new URLSearchParams({ artist: d.artist_dir, album: d.album_dir, square: square ? 1 : 0 }), { method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file })
+      .then(async r => { const j = await r.json().catch(() => ({})); if (!r.ok || j.error) throw new Error(j.error || 'HTTP ' + r.status); })).then(() => { fileIn.value = ''; });
+  } });
+  const linkIn = el('input', { type: 'text', placeholder: 'or paste an image link', 'aria-label': 'Image link' });
+  const coverRow = el('div', { class: 'coverrow' }, thumb, el('div', { class: 'coverset' },
+    el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap' }, el('button', { class: 'btn sm', type: 'button', text: 'Choose image', onclick: () => fileIn.click() }), fileIn, linkIn,
+      el('button', { class: 'btn sm ghost', type: 'button', text: 'Use link', onclick: () => applyCover(api('/api/library/cover-url', { artist: d.artist_dir, album: d.album_dir, url: linkIn.value, square })).then(() => { linkIn.value = ''; }) })),
+    el('label', { class: 'check', style: 'margin-top:8px' }, el('input', { type: 'checkbox', checked: true, onchange: ev => { square = ev.target.checked; } }), ' Crop to a square. Any image type is converted to JPG, and the change applies right away.')));
   const save = el('button', { class: 'btn go', type: 'button', text: 'Save tags', onclick: async () => {
     save.disabled = true;
     try {
@@ -358,6 +371,7 @@ async function openEditor(artist, title) {
   } });
   fill(host, el('div', { class: 'edit' },
     el('div', { class: 'bar' }, el('h2', { text: 'Edit tags' }), el('span', { class: 'sub', text: d.tracks.length + (d.tracks.length === 1 ? ' track' : ' tracks') })),
+    coverRow,
     el('div', { class: 'imp' }, field('Artist', 'artist', ''), field('Album', 'album', ''), field('Year', 'year', '2012'), field('Genre', 'genre', 'optional'), field('Label', 'label', 'optional')),
     el('div', { class: 'tlist' }, d.tracks.map((t, i) => { const inp = el('input', { type: 'text', value: t.title, 'aria-label': 'Track ' + (i + 1) + ' title', oninput: () => { titles[t.file] = inp.value; } }); return el('div', { class: 'erow' }, el('span', { class: 'sz', text: String(i + 1).padStart(2, '0') }), inp); })),
     el('label', { class: 'check' }, el('input', { type: 'checkbox', checked: true, onchange: ev => { rename = ev.target.checked; } }), ' Rename the folder and files to match'),
