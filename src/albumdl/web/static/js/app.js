@@ -72,7 +72,7 @@ $('#searchForm').addEventListener('submit', async ev => {
   try { await search(q); } catch (e) { fill($('#results'), el('div', { class: 'msg err', text: e.message })); }
   $('#searchBtn').disabled = false;
 });
-async function search(q) {
+async function search(q, hint = '') {
   if (/(?:youtube\.com|youtu\.be)\//i.test(q)) return importYt(q);
   const link = q.match(/musicbrainz\.org\/(release-group|release)\/([0-9a-f-]{36})/i);
   if (link) return direct(link[1].toLowerCase(), link[2].toLowerCase());
@@ -83,7 +83,7 @@ async function search(q) {
   }
   const { artists } = await api('/api/artists?q=' + encodeURIComponent(q));
   const exact = artists.filter(a => norm(a.name) === norm(q));
-  if (exact.length > 1) return pickArtist(exact, artists.filter(a => !exact.includes(a)));
+  if (exact.length > 1) return pickArtist(exact, artists.filter(a => !exact.includes(a)), undefined, undefined, hint);
   if (exact.length === 1) return showArtist(exact[0], artists);
   if (artists.length && artists[0].score >= 85) return showArtist(artists[0], artists);
   const d = await api('/api/search?album=' + encodeURIComponent(q));
@@ -93,11 +93,11 @@ async function search(q) {
 }
 const norm = s => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
 const who = a => [a.type, a.country, [a.begin, a.end].filter(Boolean).join('–'), a.disambiguation].filter(Boolean).join(' · ');
-function pickArtist(list, others, head = `Which ${list[0].name}?`, sub = `${list.length} artists share this name`) {
+function pickArtist(list, others, head = `Which ${list[0].name}?`, sub = `${list.length} artists share this name`, hint = '') {
   fill($('#artistBar')); fill($('#similar'));
   fill($('#results'), el('div', { class: 'bar' }, el('h2', { text: head }), el('span', { class: 'sub', text: sub })),
-    list.map(a => el('button', { class: 'lrow', type: 'button', onclick: () => showArtist(a, list.concat(others)) },
-      el('span', { class: 'jtext' }, el('b', { text: a.name }), el('small', { text: who(a) || 'No details on MusicBrainz' })))),
+    [...list].sort((x, y) => (y.id === hint) - (x.id === hint)).map(a => el('button', { class: 'lrow', type: 'button', onclick: () => showArtist(a, list.concat(others)) },
+      el('span', { class: 'jtext' }, el('b', { text: a.name }), el('small', { text: who(a) || 'No details on MusicBrainz' }), a.id === hint ? el('span', { class: 'st run', text: 'Suggested by Last.fm' }) : null))),
     others.length ? el('div', { class: 'alts', style: 'margin-top:14px' }, el('span', { text: 'Or' }), others.slice(0, 10).map(a =>
       el('button', { class: 'chip', type: 'button', text: a.name + (who(a) ? ' · ' + who(a) : ''), onclick: () => showArtist(a, list.concat(others)) }))) : null);
 }
@@ -150,7 +150,7 @@ async function openSimilar(x) {
   $('#q').value = x.name; selected.clear(); drawActions(); fill($('#artistBar')); fill($('#results'), skeleton());
   try {
     if (x.id) return await showArtist({ id: x.id, name: x.name }, []);
-    await search(x.name);
+    await search(x.name, x.hint);
   } catch (e) { fill($('#results'), el('div', { class: 'msg err', text: e.message })); }
 }
 async function showArtist(a, all) {
