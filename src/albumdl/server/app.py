@@ -78,6 +78,8 @@ def create_app(settings: Settings) -> FastAPI:
         response = await call_next(request)
         if request.url.path == "/" or request.url.path.startswith("/api/"):
             response.headers.setdefault("Cache-Control", "no-store")
+        elif request.url.path.endswith((".js", ".css")):
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
     def find_job(jid: str):
