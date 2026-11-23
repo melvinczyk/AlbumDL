@@ -1,4 +1,4 @@
-# AlbumDL
+<p align="center"><img src="docs/banner.gif" alt="AlbumDL" width="640"></p>
 
 A small web app that finds albums on MusicBrainz and downloads them from YouTube as tagged MP3s, no account needed. Albums are saved as `Artist/Album/## - Title.mp3` with a `cover.jpg`.
 
