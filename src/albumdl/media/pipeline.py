@@ -145,6 +145,12 @@ def run(album: mb.Album, opts: Options, log: Callable[[str], None] = print,
                 entry, why = {"id": t.source, "title": t.title, "channel": "YouTube link"}, "imported from a YouTube link"
             elif playlist:
                 entry = youtube.match_playlist(t, playlist, i, album)
+                if entry and entry.get("by_position"):
+                    why = "official YouTube Music album playlist (matched by position and length)"
+            if entry is None and not t.source:
+                song = retrying(lambda: youtube.find_song(t, album), opts.cancel)
+                if song:
+                    entry, why = song, "official YouTube Music song"
             if entry is None and not t.source:
                 hit = youtube.search_official(t, album)
                 entry, why = hit if hit else (None, "")

@@ -36,7 +36,8 @@ def ydl(opts: dict) -> YoutubeDL:
 
 def core(s: str) -> str:
     s = re.sub(r"\(.*?\)|\[.*?\]", " ", (s or "").lower())
-    return " ".join(re.sub(r"[^\w]+", " ", s).split())
+    words = " ".join(re.sub(r"[^\w]+", " ", s).split())
+    return words or re.sub(r"\s+", "", (s or "").replace("\u2026", "..."))
 
 
 def compact(s: str) -> str:
@@ -273,7 +274,30 @@ def match_playlist(track: Track, entries: List[dict], index: int, album: Album) 
         key = (ratio, e.get("_index") == index, -gap)
         if best is None or key > best[0]:
             best = (key, e)
-    return best[1] if best else None
+    if best:
+        return best[1]
+    if len(entries) == len(album.tracks) and 0 < index <= len(entries):
+        e = entries[index - 1]
+        dur = e.get("duration")
+        if not (dur and track.length_ms) or abs(dur - track.length_ms / 1000) <= MAX_DURATION_DIFF:
+            return dict(e, by_position=True)
+    return None
+
+
+def find_song(track: Track, album: Album) -> Optional[dict]:
+    """YouTube Music song search: official uploads that name this album, matched by album, artist and length."""
+    from ytmusicapi import YTMusic
+    for r in YTMusic().search(f"{album.artist} {album.title} {track.title}", filter="songs", limit=12):
+        if not r.get("videoId") or core((r.get("album") or {}).get("name", "")) != core(album.title):
+            continue
+        if not any(compact(a["name"]) in compact(album.artist) or compact(album.artist) in compact(a["name"]) for a in r.get("artists", [])):
+            continue
+        dur = r.get("duration_seconds")
+        if track.length_ms and dur and abs(dur - track.length_ms / 1000) > MAX_DURATION_DIFF:
+            continue
+        if title_matches(r.get("title", ""), track.title, album.title):
+            return {"id": r["videoId"], "title": r["title"], "channel": " & ".join(a["name"] for a in r["artists"]), "duration": dur}
+    return None
 
 
 def search_official(track: Track, album: Album) -> Optional[Tuple[dict, str]]:
