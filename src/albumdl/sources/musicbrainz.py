@@ -4,6 +4,7 @@ import os
 import re
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -189,10 +190,14 @@ def search_albums(artist: str, album: str, limit: int = 50) -> List[dict]:
     return rows
 
 
+def _fold(s: str) -> str:
+    return re.sub(r"[\W_]+", "", "".join(c for c in unicodedata.normalize("NFD", s.lower()) if not unicodedata.combining(c)))
+
+
 def search_artists(name: str, limit: int = 6) -> List[dict]:
-    data = _get("artist", query=f'artist:"{_q(name)}"', limit=limit)
+    data = _get("artist", query=f'artist:"{_q(name)}"', limit=50)
     if not data.get("artists"):
-        data = _get("artist", query=name, limit=limit)
+        data = _get("artist", query=name, limit=50)
     out = []
     for a in data.get("artists", []):
         span = a.get("life-span") or {}
@@ -200,7 +205,8 @@ def search_artists(name: str, limit: int = 6) -> List[dict]:
                     "country": a.get("country") or "", "disambiguation": a.get("disambiguation") or "",
                     "begin": (span.get("begin") or "")[:4], "end": (span.get("end") or "")[:4],
                     "score": int(a.get("score", 0))})
-    return out
+    out.sort(key=lambda a: _fold(a["name"]) != _fold(name))
+    return out[:limit]
 
 
 def artist_info(artist_id: str) -> dict:
