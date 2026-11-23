@@ -82,7 +82,7 @@ class Library:
         tracks = size = 0
         try:
             for f in os.scandir(os.path.join(path, album_dir)):
-                if f.is_file() and f.name.lower().endswith(AUDIO):
+                if f.is_file() and f.name.lower().endswith(AUDIO) and not f.name.startswith("."):
                     tracks += 1
                     size += f.stat().st_size
         except OSError:
