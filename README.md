@@ -1,24 +1,24 @@
 # AlbumDL
 
-AlbumDL is a webserver that allows you to download albums from YouTube Music without an account. It is meant to run on servers for quick downloading and catalouging.
-
-It uses MusicBrainz public database to find metadata about songs and for grabbing the cover art.
-
-Albums are saved straight into one folder as `Artist/Album/## - Title.mp3` plus `cover.jpg` in there too.
+A small web app that finds albums on MusicBrainz and downloads them from YouTube as tagged MP3s, no account needed. Albums are saved as `Artist/Album/## - Title.mp3` with a `cover.jpg`.
 
 ## Run with Docker
 
-Make sure to edit `.env` once you make it
 ```sh
-cp .env.example .env
-
+cp .env.example .env    # then edit it
 sudo docker compose up -d --build
 ```
 
 Open `http://<server-ip>:8080`. There is no login, so keep it on your home network.
-Edit `docker-compose.yml` to change the number of parallel downloads. Set `CONTACT` in `.env` to your email or a URL so MusicBrainz can identify the app.
 
-To update yt-dlp, rebuild: `docker compose build --no-cache && docker compose up -d`.
+| `.env` | Meaning |
+| --- | --- |
+| `MUSIC_DIR` | Folder the albums are saved to |
+| `PORT` | Web port (default 8080) |
+| `CONTACT` | Your email or a URL, so MusicBrainz doesn't throttle you |
+| `LASTFM_KEY` | Optional, for similar artists (falls back to ListenBrainz) |
+
+Parallel downloads are set by `ALBUMDL_JOBS` in `docker-compose.yml`. To update yt-dlp, run `docker compose build --no-cache && docker compose up -d`.
 
 ## Run without Docker
 
@@ -26,57 +26,21 @@ Needs Python 3.12, `ffmpeg` and `deno` (or `node`).
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install .
-
 OUTPUT_DIR=./out .venv/bin/albumdl
 ```
 
-## How to use
+## Using it
 
-- The search box takes an artist, an album, or a link. Words can go in any order (`Title Fight Kingston`, `Kingston by Title Fight`) and small typos are tolerated. A MusicBrainz link opens that release.
-- If MusicBrainz and YouTube Music have nothing, the search lists YouTube playlists and long videos, so you can import unofficial music (game soundtracks, fan uploads). You can also paste a YouTube link directly, or press **Search YouTube uploads** under any result list.
-- Artist pages show **Similar** artists. Tap one to open it. Artists you already have a folder for get a check mark, and artist photos come from Deezer. Add `LASTFM_KEY=<your key>` to `.env` to use Last.fm (a free API key from last.fm/api); without it the list comes from ListenBrainz.
-- If MusicBrainz has no match (new or small artists), the search falls back to YouTube Music, and a **Search YouTube Music** button sits under every MusicBrainz result list. Those albums get basic tags (artist, album, year, track numbers, cover) and no MusicBrainz IDs.
-- **Unofficial uploads** (game soundtracks, fan uploads): paste a YouTube playlist or video link into the search box. AlbumDL lists the videos, strips the album name and track numbers from the titles, and lets you edit the artist, album, year, genre and each title before downloading. A single video with chapters (a full album upload) is split into one track per chapter; the video is downloaded once. The cover is the video thumbnail, cropped square.
-- Select a single album and an **Edition** menu appears when it has other editions (deluxe, anniversary, bonus tracks). The standard edition is the default. A non-standard edition is saved as `Title (edition name)`, so it sits next to the standard one instead of replacing it.
-- Albums whose tags lack a genre or year are marked **Data incomplete** in the Library and in the Queue. Select one in the Library and press **Edit tags** (or **Edit tags** on its Queue row) to fill in the artist, album, year, genre, label and track titles. Saving rewrites the tags and can rename the folder and files to match. A saved album no longer shows the notice.
-- To change an album's cover, open **Edit tags** in the Library. Choose an image from your computer or paste an image link. PNG, WebP, GIF, BMP and JPG all work, and anything that isn't already a JPG is converted. By default it is cropped to a square. The new cover is saved as `cover.jpg` and embedded in every track right away.
-- If a track can't be found, select the incomplete album in the Library and press **Link tracks** (or **Link tracks** on its Queue row). Paste the YouTube link for each missing song. Only that song is downloaded and tagged from the album's MusicBrainz data, and the rest of the album is left alone. **Retry** still searches again for everything.
-- Albums already in the folder are marked **In folder**.
-- Tap albums, EPs or singles to select them (or **Select all** for a discography), then press **Download**. Downloading an album that is already there replaces it.
-- Select albums marked **In folder** and press **Delete** (twice, to confirm) to remove their folders from disk. Navidrome keeps deleted albums as empty "missing" entries until you remove them in its Missing Files page, or set `ND_SCANNER_PURGEMISSING=full` on the Navidrome container.
-- **Find missing covers** (in the Library) scans the music folder for albums without a `cover.jpg`, looks the cover up again and embeds it. Results are in the Log. Navidrome shows the new covers after its next scan.
-- **Library** lists every album in the music folder with its tracks, size, age and whether it is incomplete or has no cover. Tap albums to select them, then **Delete** (twice, to confirm) or **Retry** the incomplete ones. Folders with a slightly different name still count as **In folder** in Search.
-- If a track still fails after many retries, the album folder gets an `INCOMPLETE.txt` listing what is missing, and the album is tagged **Incomplete**.
-- `Queue` shows progress, with the tracks of each album inside its row. `Log` shows the server log.
-- If no official upload exists for a track, the best matching upload is used and marked **Unofficial upload** in the queue.
+- **Search** takes an artist, `Artist - Album` (any word order), or a MusicBrainz or YouTube link. Tap albums to select them, then **Download**.
+- **Not on MusicBrainz?** It falls back to YouTube Music, then to YouTube playlists and videos. Paste a YouTube link to import unofficial music; full-album videos are split by chapter.
+- **Library** lists what you have. Select albums to delete them, retry incomplete ones, edit tags and covers, or link a YouTube video for a missing track.
+- **Queue** shows progress and **Log** shows the server log.
 
 ## Where data comes from
 
-Higher entries win. A lower source only fills what is still empty and never overwrites.
+Higher sources win; lower ones only fill what is empty.
 
-```
-Finding albums
- 1. MusicBrainz (artist and album search)
- 2. YouTube Music (when MusicBrainz has no match)
-
-Tags for each album
- 1. MusicBrainz release          (or YouTube Music when MusicBrainz has none)
- 2. Deezer                       genres, label, barcode, full date, type
- 3. iTunes                       genres, full date
- 4. Last.fm (needs a key)        genres
- The download log shows what was filled: "metadata filled: genres from Deezer".
-
-Cover art (the largest image found wins)
- 1. Cover Art Archive (release, then release group)
- 2. iTunes and Deezer            searched at the same time
- 3. YouTube Music                last resort
-
-Audio for each track
- 0. A YouTube link you pasted (the import form)
- 1. Official YouTube Music album playlist
- 2. Official upload (label-delivered Topic track, verified artist or label channel)
- 3. Best matching unofficial upload, marked in the Queue
-
-Similar artists: Last.fm (needs a key), then ListenBrainz
-Artist photos: Deezer
-```
+- **Albums:** MusicBrainz, then YouTube Music
+- **Tags:** MusicBrainz, then Deezer, iTunes, Last.fm
+- **Covers:** Cover Art Archive, then iTunes and Deezer, then YouTube Music
+- **Audio:** your pasted link, the official album playlist, an official upload, then the best unofficial one
