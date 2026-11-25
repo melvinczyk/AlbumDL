@@ -24,7 +24,8 @@ from starlette.exceptions import HTTPException
 from ..media import pipeline, tagging
 from ..sources import musicbrainz as mb
 from ..sources import lyrics, youtube
-from ..sources.similar import artist_photo, similar_artists
+from ..sources import discover, genremap
+from ..sources.similar import artist_photo, deeper, similar_artists
 from .jobs import FINISHED, EventLog, JobManager, Library
 
 WEB = Path(__file__).parent.parent / "web"
@@ -229,8 +230,32 @@ def create_app(settings: Settings) -> FastAPI:
         return {"albums": albums}
 
     @app.get("/api/similar/{aid}")
-    def similar(aid: MbId, name: str = ""):
-        return {"artists": [dict(a, owned=library.has_artist(a["name"])) for a in similar_artists(aid, name[:120])]}
+    def similar(aid: MbId, name: str = "", mode: str = ""):
+        if mode == "deep":
+            rows, genres = deeper(aid, name[:120]), []
+        else:
+            d = similar_artists(aid, name[:120])
+            rows, genres = d["artists"][:24], d["genres"]
+        return {"artists": [dict(a, owned=library.has_artist(a["name"])) for a in rows], "genres": genres}
+
+    @app.get("/api/discover/feed")
+    def discover_feed(shuffle: int = 0):
+        return discover.feed(library.albums(), library.owned_album, library.has_artist, shuffle)
+
+    @app.post("/api/discover/feed")
+    def discover_area(body: dict = Body(default={})):
+        area = [str(n)[:200] for n in body.get("artists") or [] if isinstance(n, str)][:400]
+        return discover.feed(library.albums(), library.owned_album, library.has_artist, int(body.get("shuffle") or 0), area or None)
+
+    @app.get("/api/discover/map")
+    def discover_map():
+        return genremap.music_map(library.albums())
+
+    @app.get("/api/discover/album")
+    def discover_album(artist: str = "", album: str = ""):
+        if not artist.strip() or not album.strip():
+            raise HTTPException(400, "artist and album are needed")
+        return discover.like_album(artist.strip()[:120], album.strip()[:200], library.owned_album)
 
     @app.get("/api/artist-img")
     def artist_img(name: str = ""):
@@ -248,7 +273,8 @@ def create_app(settings: Settings) -> FastAPI:
     @guarded
     def release(rid: MbId):
         album = mb.get_release(rid)
-        folder = pipeline.album_folder(album, settings.out_root)
+        folder = library.folder_of(album.artist, album.title) or pipeline.album_folder(album, settings.out_root)
+        have = pipeline.present(folder, album.tracks, lambda t: pipeline.track_file(album, t))
         return {
             "mbid": album.mbid, "group_id": album.group_id, "title": album.title, "artist": album.artist,
             "date": album.date, "original_date": album.original_date, "label": album.label, "genres": album.genres,
@@ -256,7 +282,8 @@ def create_app(settings: Settings) -> FastAPI:
             "folder": folder, "owned": library.owned_album(album.artist, album.title),
             "tracks": [{"disc": t.disc, "number": t.number, "title": t.title,
                         "seconds": round(t.length_ms / 1000) if t.length_ms else None,
-                        "artist": t.artist if t.artist != album.artist else ""} for t in album.tracks],
+                        "artist": t.artist if t.artist != album.artist else "", "recording": t.recording_id,
+                        "have": i in have} for i, t in enumerate(album.tracks, 1)],
         }
 
     @app.get("/api/jobs")
@@ -279,7 +306,7 @@ def create_app(settings: Settings) -> FastAPI:
     @guarded
     def discography(body: dict = Body(...)):
         groups = [{"id": str(g.get("id", "")).lower(), "title": str(g.get("title", "")), "artist": str(g.get("artist", "")),
-                   "release": r if re.fullmatch(MBID, r := str(g.get("release", "")).lower()) else ""}
+                   "release": r if re.fullmatch(MBID, r := str(g.get("release", "")).lower()) else "", "replace": bool(body.get("replace"))}
                   for g in body.get("groups", []) if isinstance(g, dict)][:1500]
         if not groups or not all(re.fullmatch(MBID, g["id"]) for g in groups):
             raise HTTPException(400, "nothing valid to download")
@@ -289,6 +316,30 @@ def create_app(settings: Settings) -> FastAPI:
         if not fresh:
             return {"batch": None, "duplicates": len(groups)}
         return {"batch": jobs.discography(name, fresh, bool(body.get("skip_owned", True))).summary(), "duplicates": len(groups) - len(fresh)}
+
+    @app.post("/api/songs")
+    def songs(body: dict = Body(...)):
+        """Single songs, each saved into its album's folder (Artist/Album/## - Title.mp3) like a partial album download."""
+        groups = []
+        for g in body.get("groups", [])[:50]:
+            if not isinstance(g, dict):
+                continue
+            gid, rid = str(g.get("id") or "").lower(), str(g.get("release") or "").lower()
+            tracks = [{"recording": str(t.get("recording") or "")[:36], "title": str(t.get("title") or "")[:200]}
+                      for t in (g.get("tracks") or [])[:200] if isinstance(t, dict) and (t.get("recording") or t.get("title"))]
+            artist, title = str(g.get("artist") or "").strip()[:200], str(g.get("title") or "").strip()[:200]
+            if (gid and not re.fullmatch(MBID, gid)) or (rid and not re.fullmatch(MBID, rid)) or not tracks or not artist or not title:
+                raise HTTPException(400, "each album needs an artist, a title and at least one song")
+            groups.append({"id": gid, "release": rid, "artist": artist, "title": title, "tracks": tracks})
+        if not groups:
+            raise HTTPException(400, "no songs to download")
+        n = sum(len(g["tracks"]) for g in groups)
+        name = str(body.get("name") or (groups[0]["tracks"][0]["title"] if n == 1 else f"{n} songs"))[:120]
+        return {"batch": jobs.discography(name, groups, False).summary(), "songs": n}
+
+    @app.get("/api/artist-top/{aid}")
+    def artist_top(aid: MbId, name: str = ""):
+        return discover.artist_top(aid, name[:120], library.songs_in)
 
     @app.get("/api/library")
     def library_list():

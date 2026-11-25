@@ -24,6 +24,7 @@
 
   <nav id="nav">
     <button data-view="search" aria-selected="true"><span class="pi search"></span><b>Search</b></button>
+    <button data-view="discover" aria-selected="false"><span class="pi star"></span><b>Discover</b></button>
     <button data-view="library" aria-selected="false"><span class="pi folder"></span><b>Library</b></button>
     <button data-view="queue" aria-selected="false"><span class="pi download"></span><b>Queue</b><em class="badge" id="bQueue" hidden>0</em></button>
     <button data-view="log" aria-selected="false"><span class="pi console"></span><b>Log</b><em class="badge bad" id="bLog" hidden>0</em></button>
@@ -36,8 +37,13 @@
       <button class="btn go" id="searchBtn" type="submit">Search</button>
     </form>
     <div id="artistBar"></div>
-    <div id="similar"></div>
+    <div id="artistTop"></div>
     <div id="results"></div>
+    <div id="similar"></div>
+  </main>
+
+  <main class="view" id="v-discover">
+    <div id="disc"></div>
   </main>
 
   <main class="view" id="v-library">
@@ -85,6 +91,7 @@
     <button class="btn ghost" id="linkBtn" type="button" hidden>Link tracks</button>
     <button class="btn ghost" id="editBtn" type="button" hidden>Edit tags</button>
     <button class="btn ghost" id="expBtn" type="button" hidden>Export</button>
+    <button class="btn ghost" id="likeBtn" type="button" hidden><span class="pi star c"></span>More like this</button>
     <button class="btn ghost danger" id="delBtn" type="button" hidden>Delete</button>
     <button class="btn go" id="dlBtn" type="button"><span class="pi download k"></span><span id="dlLabel">Download</span></button>
   </div>

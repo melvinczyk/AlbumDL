@@ -7,6 +7,7 @@ import socket
 import tempfile
 import threading
 import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Tuple
@@ -36,10 +37,49 @@ class Options:
     out_root: str
     jobs: int = 4
     cancel: threading.Event = field(default_factory=threading.Event)
+    replace: bool = False
+
+
+SONG_FILE = re.compile(r"^(?:\d+-)?\d+ - (.*)\.mp3$", re.I)
+
+
+def title_key(title: str) -> str:
+    """Compare song titles loosely: 'Runaway (feat. Pusha T)' and 'Runaway' are the same song."""
+    t = re.sub(r"\s*[\(\[][^\)\]]*[\)\]]", "", title or "")
+    t = re.sub(r"\s+-\s+.*\b(remaster(ed)?|version|mix|edit|mono|stereo)\b.*$", "", t, flags=re.I)
+    t = "".join(c for c in unicodedata.normalize("NFKD", t) if not unicodedata.combining(c)).lower()
+    return re.sub(r"\W+", "", t) or (title or "").lower()
+
+
+def present(folder: str, tracks: list, target: Callable) -> set:
+    """Which tracks (1-based) are already in the folder: by file name, or by title when another edition numbered them differently."""
+    try:
+        files = [f.name for f in os.scandir(folder) if f.is_file() and f.name.lower().endswith(".mp3") and not f.name.startswith(".")]
+    except OSError:
+        return set()
+    names, have = set(files), set()
+    loose = collections.Counter(title_key(m.group(1)) for f in files if (m := SONG_FILE.match(f)))
+    for i, t in enumerate(tracks, 1):
+        name = os.path.basename(target(t))
+        if name in names:
+            have.add(i)
+            m = SONG_FILE.match(name)
+            loose[title_key(m.group(1)) if m else ""] -= 1
+    for i, t in enumerate(tracks, 1):
+        k = title_key(safe(t.title))
+        if i not in have and loose[k] > 0:
+            have.add(i)
+            loose[k] -= 1
+    return have
 
 
 def album_folder(album: mb.Album, out_root: str) -> str:
     return album.folder or os.path.join(out_root, safe(album.artist), safe(album.title))
+
+
+def track_file(album: mb.Album, t: mb.Track) -> str:
+    name = f"{t.disc}-{t.number:02d}" if album.disc_total > 1 else f"{t.number:02d}"
+    return f"{name} - {safe(t.title)}.mp3"
 
 
 def read_marker(folder: str) -> list:
@@ -99,7 +139,8 @@ def publish(src: str, dst: str) -> None:
 
 def run(album: mb.Album, opts: Options, log: Callable[[str], None] = print,
         on_track: Optional[Callable[..., None]] = None) -> Tuple[int, int]:
-    """Download an album, replacing anything already there. Returns (done, failed)."""
+    """Download an album's tracks into Artist/Album/. Tracks already in the folder are kept (unless opts.replace),
+    so downloading a few songs and later the whole album only fetches what is missing. Returns (done, failed)."""
     folder = album_folder(album, opts.out_root)
     total = len(album.tracks)
     note = on_track or (lambda *_, **__: None)
@@ -110,10 +151,19 @@ def run(album: mb.Album, opts: Options, log: Callable[[str], None] = print,
             log(msg)
 
     def target(t: mb.Track) -> str:
-        name = f"{t.disc}-{t.number:02d}" if album.disc_total > 1 else f"{t.number:02d}"
-        return os.path.join(folder, f"{name} - {safe(t.title)}.mp3")
+        return os.path.join(folder, track_file(album, t))
 
     log(f"{album.artist} - {album.title} ({album.date or '?'}), {total} tracks -> {folder}")
+    have = set() if opts.replace else present(folder, album.tracks, target)
+    for i in sorted(have):
+        note(i, "exists", "already in the folder")
+    if have:
+        log(f"{len(have)} of {total} tracks already in the folder, keeping them")
+    if len(have) == total:
+        names = {os.path.basename(target(t))[:-4] for t in album.tracks}
+        write_marker(folder, [n for n in read_marker(folder) if n not in names] if album.partial else [])
+        log(f"\nDone: all {total} tracks were already there")
+        return total, 0
     imported = all(t.source for t in album.tracks)
     try:
         filled = {} if imported else metadata.fill(album)
@@ -246,8 +296,8 @@ def run(album: mb.Album, opts: Options, log: Callable[[str], None] = print,
                     opts.cancel.wait(2 if isinstance(exc, SourceFailed) else min(90, 8 * 2 ** (n - 1)))
             return "error"
 
-        outcome = {}
-        pending = list(enumerate(album.tracks, 1))
+        outcome = {i: "ok" for i in have}
+        pending = [(i, t) for i, t in enumerate(album.tracks, 1) if i not in have]
         for rnd in range(1, ROUNDS + 1):
             with ThreadPoolExecutor(max_workers=max(1, opts.jobs)) as pool:
                 for (i, _), result in zip(pending, pool.map(lambda it: work(*it), pending)):

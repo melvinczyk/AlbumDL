@@ -194,6 +194,32 @@ def search_albums(artist: str, album: str, limit: int = 50) -> List[dict]:
     return rows
 
 
+def find_group(artist: str, title: str) -> str:
+    """The release group for an album named on another service (Deezer titles carry '(Deluxe)' and the like)."""
+    base = re.sub(r"\s*[\(\[][^\)\]]*[\)\]]\s*", " ", title).strip() or title
+    rows = search_albums(artist, base, limit=15)
+    want = _norm(base)
+    same = [r for r in rows if _norm(r["title"]) == want and _fold(artist) in _fold(r["artist"])]
+    return same[0]["id"] if same else ""
+
+
+def find_song_group(artist: str, song: str) -> dict:
+    """The studio album a song first appeared on, for when the album another service names is not on MusicBrainz."""
+    data = _get("recording", query=f'recording:"{_q(song)}" AND artist:"{_q(artist)}" AND primarytype:album AND status:official', limit=25)
+    best = None
+    for rec in data.get("recordings", []):
+        if _norm(rec.get("title", "")) != _norm(song):
+            continue
+        for rel in rec.get("releases", []):
+            g = rel.get("release-group", {})
+            if g.get("primary-type") != "Album" or g.get("secondary-types") or not g.get("id"):
+                continue
+            row = {"id": g["id"], "title": g.get("title") or rel.get("title", ""), "date": rel.get("date") or "9999"}
+            if not best or row["date"] < best["date"]:
+                best = row
+    return best or {}
+
+
 def _fold(s: str) -> str:
     return re.sub(r"[\W_]+", "", "".join(c for c in unicodedata.normalize("NFD", s.lower()) if not unicodedata.combining(c)))
 

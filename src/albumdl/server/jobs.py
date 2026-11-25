@@ -45,6 +45,19 @@ class EventLog:
             return {"logs": [e for e in self.events if e["id"] > last][-limit:], "last": self.seq}
 
 
+def pick_tracks(tracks: List[mb.Track], wanted: List[dict]) -> List[mb.Track]:
+    """The release's tracks for the songs asked for, by MusicBrainz recording id, else by title."""
+    out = []
+    for w in wanted:
+        rec, key = str(w.get("recording") or ""), pipeline.title_key(str(w.get("title") or ""))
+        hit = next((t for t in tracks if rec and t.recording_id == rec), None) \
+            or next((t for t in tracks if key and pipeline.title_key(t.title) == key), None) \
+            or next((t for t in tracks if key and len(key) > 3 and difflib.SequenceMatcher(None, key, pipeline.title_key(t.title)).ratio() >= 0.88), None)
+        if hit and hit not in out:
+            out.append(hit)
+    return sorted(out, key=lambda t: (t.disc, t.number))
+
+
 def _key(name: str) -> str:
     return re.sub(r"[\W_]+", "", name.lower())
 
@@ -55,7 +68,7 @@ class Library:
     def __init__(self, out_root: str):
         self.out_root = out_root
         self._cache: Dict[str, tuple] = {}
-        self._tags: Dict[tuple, List[str]] = {}
+        self._tags: Dict[tuple, tuple] = {}
 
     def refresh(self) -> None:
         self._cache.clear()
@@ -82,6 +95,19 @@ class Library:
         close = [c for c in difflib.get_close_matches(key, names, n=3, cutoff=0.88) if re.findall(r"\d+", c) == digits] if len(key) > 4 else []
         return names[close[0]] if close else None
 
+    def folder_of(self, artist: str, title: str) -> str:
+        artist_dir = self._find(self.out_root, artist)
+        album_dir = artist_dir and self._find(os.path.join(self.out_root, artist_dir), title)
+        return os.path.join(self.out_root, artist_dir, album_dir) if album_dir else ""
+
+    def songs_in(self, artist: str, title: str) -> set:
+        """Loose title keys of the songs already saved for this album."""
+        folder = self.folder_of(artist, title)
+        try:
+            return {pipeline.title_key(m.group(1)) for f in os.scandir(folder) if (m := pipeline.SONG_FILE.match(f.name))} if folder else set()
+        except OSError:
+            return set()
+
     def has_artist(self, name: str) -> bool:
         return self._find(self.out_root, name) is not None
 
@@ -102,7 +128,9 @@ class Library:
         except OSError:
             return None
         incomplete = os.path.exists(os.path.join(path, album_dir, pipeline.INCOMPLETE))
-        return {"tracks": tracks, "size": size, "incomplete": incomplete} if tracks else None
+        first = min((f.name for f in os.scandir(os.path.join(path, album_dir)) if f.name.lower().endswith(".mp3") and not f.name.startswith(".")), default="")
+        of = self._total(os.path.join(path, album_dir, first)) if first else 0
+        return {"tracks": tracks, "size": size, "incomplete": incomplete, "of": of, "picked": not incomplete and tracks < of} if tracks else None
 
     def remove_album(self, artist: str, title: str) -> bool:
         artist_dir = self._find(self.out_root, artist)
@@ -157,7 +185,10 @@ class Library:
                 out.append({"artist": artist, "title": album, "tracks": tracks, "size": size, "mtime": newest,
                             "cover": cover, "incomplete": incomplete, "missing": missing,
                             "lyrics": sum(1 for b in audio_bases if b in lyric_bases),
-                            "gaps": self._gaps(os.path.join(apath, album, first)) if first else []})
+                            "gaps": self._gaps(os.path.join(apath, album, first)) if first else [],
+                            "of": self._total(os.path.join(apath, album, first)) if first else 0,
+                            "genres": self._genres(os.path.join(apath, album, first)) if first else []})
+                out[-1]["picked"] = not incomplete and tracks < out[-1]["of"]
         return out
 
     def _gaps(self, path: str) -> List[str]:
@@ -167,10 +198,13 @@ class Library:
         except OSError:
             return []
         if key not in self._tags:
-            gaps = []
+            gaps, total, genres = [], 0, []
             try:
                 from mutagen.id3 import ID3
                 t = ID3(path)
+                n, d = str(t.get("TRCK") or "").partition("/")[2], str(t.get("TPOS") or "1/1").partition("/")[2]
+                total = int(n) if n.isdigit() and (not d or d == "1") else 0
+                genres = [g.strip() for x in (t["TCON"].text if "TCON" in t else []) for g in re.split(r"[;/,]", str(x)) if g.strip()][:6]
                 if not any(f.desc == "ALBUMDL_REVIEWED" for f in t.getall("TXXX")):
                     if not str(t.get("TCON") or "").strip():
                         gaps.append("genre")
@@ -178,8 +212,23 @@ class Library:
                         gaps.append("year")
             except Exception:
                 pass
-            self._tags[key] = gaps
-        return self._tags[key]
+            self._tags[key] = (gaps, total, genres)
+        return self._tags[key][0]
+
+    def _genres(self, path: str) -> List[str]:
+        self._gaps(path)
+        try:
+            return self._tags.get((path, os.path.getmtime(path)), ([], 0, []))[2]
+        except OSError:
+            return []
+
+    def _total(self, path: str) -> int:
+        """How many tracks the album has, from the first song's 'track n/total' tag (single-disc albums only)."""
+        self._gaps(path)
+        try:
+            return self._tags.get((path, os.path.getmtime(path)), ([], 0, []))[1]
+        except OSError:
+            return 0
 
     def album_detail(self, artist: str, title: str) -> Optional[dict]:
         from mutagen.id3 import ID3
@@ -343,8 +392,8 @@ class JobManager:
         self.lock = threading.Lock()
         threading.Thread(target=self._worker, daemon=True).start()
 
-    def submit(self, album: mb.Album) -> Job:
-        job = Job(album, pipeline.Options(out_root=self.out_root, jobs=self.parallel))
+    def submit(self, album: mb.Album, replace: bool = False) -> Job:
+        job = Job(album, pipeline.Options(out_root=self.out_root, jobs=self.parallel, replace=replace))
         with self.lock:
             self.jobs[job.id] = job
             self.order.append(job.id)
@@ -402,11 +451,20 @@ class JobManager:
                 break
             batch.current = g["title"]
             have = self.library.owned_album(g["artist"], g["title"])
-            if skip_owned and have and not have["incomplete"]:
+            if skip_owned and have and not have["incomplete"] and not have.get("picked"):
                 batch.skipped += 1
                 self.events.emit("info", "queue", f"discography: skipped {g['title']} (already in the folder)")
                 continue
             try:
+                if not g["id"]:
+                    g["id"] = mb.find_group(g["artist"], g["title"])
+                if not g["id"] and len(g.get("tracks") or []) == 1:
+                    alt = mb.find_song_group(g["artist"], g["tracks"][0]["title"])
+                    if alt:
+                        self.events.emit("info", "queue", f"{g['tracks'][0]['title']}: saving it with {alt['title']}, the album MusicBrainz has it on")
+                        g["id"], g["title"] = alt["id"], alt["title"]
+                if not g["id"]:
+                    raise RuntimeError("no matching album on MusicBrainz")
                 release = g.get("release")
                 if not release:
                     editions = mb.group_editions(g["id"])
@@ -416,8 +474,14 @@ class JobManager:
                 album = mb.get_release(release)
                 if g.get("release") and not g.get("folder") and album.edition and album.edition.lower() not in album.title.lower():
                     album.title = f"{album.title} ({album.edition})"
-                album.folder = g.get("folder") or ""
-                self.submit(album)
+                album.folder = g.get("folder") or self.library.folder_of(album.artist, album.title) or ""
+                if g.get("tracks"):
+                    picked = pick_tracks(album.tracks, g["tracks"])
+                    if not picked:
+                        raise RuntimeError("those songs are not on the MusicBrainz release")
+                    album.disc_counts = dict(collections.Counter(t.disc for t in album.tracks))
+                    album.tracks, album.partial = picked, True
+                self.submit(album, bool(g.get("replace")))
                 batch.queued += 1
             except BaseException as exc:
                 batch.failed += 1

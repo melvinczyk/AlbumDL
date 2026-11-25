@@ -41,7 +41,7 @@ function cover(url) {
   return box;
 }
 
-const VIEWS = { search: 'search', library: 'library', queue: 'queue', log: 'log', discover: 'search', console: 'log' };
+const VIEWS = { search: 'search', discover: 'discover', library: 'library', queue: 'queue', log: 'log', console: 'log' };
 let view = 'search';
 function show(name) {
   name = VIEWS[name] || 'search'; view = name; store.set('view', name);
@@ -52,6 +52,7 @@ function show(name) {
   if (name === 'log') { unseen = 0; badges(); renderLog(); }
   if (name === 'queue') tick();
   if (name === 'library') loadLibrary();
+  if (name === 'discover' && !discSeed && !discData) loadDiscover();
   scrollTo(0, 0);
 }
 document.querySelectorAll('[data-view]').forEach(b => b.addEventListener('click', () => show(b.dataset.view)));
@@ -67,7 +68,7 @@ $('#searchForm').addEventListener('submit', async ev => {
   ev.preventDefault();
   const q = $('#q').value.trim(); if (!q) return; lastQ = q.replace(/\s+[-–—]\s+/g, ' ');
   $('#q').blur(); $('#searchBtn').disabled = true;
-  selected.clear(); artistCtx = null; drawActions(); fill($('#artistBar')); fill($('#similar'));
+  selected.clear(); artistCtx = null; drawActions(); fill($('#artistBar')); fill($('#artistTop')); fill($('#similar'));
   fill($('#results'), skeleton());
   try { await search(q); } catch (e) { fill($('#results'), el('div', { class: 'msg err', text: e.message })); }
   $('#searchBtn').disabled = false;
@@ -99,7 +100,7 @@ async function search(q, hint = '') {
 const norm = s => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
 const who = a => [a.type, a.country, [a.begin, a.end].filter(Boolean).join('–'), a.disambiguation].filter(Boolean).join(' · ');
 function pickArtist(list, others, head = `Which ${list[0].name}?`, sub = `${list.length} artists share this name`, hint = '') {
-  fill($('#artistBar')); fill($('#similar'));
+  fill($('#artistBar')); fill($('#artistTop')); fill($('#similar'));
   fill($('#results'), el('div', { class: 'bar' }, el('h2', { text: head }), el('span', { class: 'sub', text: sub })),
     [...list].sort((x, y) => (y.id === hint) - (x.id === hint)).map(a => el('button', { class: 'lrow', type: 'button', onclick: () => showArtist(a, list.concat(others)) },
       el('span', { class: 'jtext' }, el('b', { text: a.name }), el('small', { text: who(a) || 'No details on MusicBrainz' }), a.id === hint ? el('span', { class: 'st run', text: 'Suggested by Last.fm' }) : null))),
@@ -165,52 +166,437 @@ function rows(d, name) {
   renderResults();
 }
 async function openSimilar(x) {
-  $('#q').value = x.name; selected.clear(); drawActions(); fill($('#artistBar')); fill($('#results'), skeleton());
+  $('#q').value = x.name; selected.clear(); drawActions(); fill($('#artistBar')); fill($('#artistTop')); fill($('#results'), skeleton());
   try {
     if (x.id) return await showArtist({ id: x.id, name: x.name }, []);
     await search(x.name, x.hint);
   } catch (e) { fill($('#results'), el('div', { class: 'msg err', text: e.message })); }
 }
+let artistTop = null;
+const mmss = n => n ? Math.floor(n / 60) + ':' + pad(n % 60) : '';
+const genreTags = (line, genres) => { if (genres && genres.length && line && !line.dataset.g) { line.dataset.g = 1; line.append(el('span', { class: 'genres' }, genres.map(g => el('i', { text: g })))); } };
 async function showArtist(a, all) {
-  artistCtx = a; selected.clear(); drawActions(); results = [];
-  const alts = all.filter(x => x.id !== a.id).slice(0, 5), line = el('p', { class: 'sub', text: who(a) });
-  fill($('#artistBar'), line, alts.length ? el('div', { class: 'alts' }, el('span', { text: 'Not them?' }), alts.map(x =>
-    el('button', { class: 'chip', type: 'button', text: x.name + (who(x) ? ' · ' + who(x) : ''), onclick: () => showArtist(x, all) })),
-    all.length > alts.length + 1 ? el('button', { class: 'chip on', type: 'button', text: `See all ${all.length}`, onclick: () => pickArtist(all, [], 'Artists with this name', `${all.length} matches, exact names first`) }) : null) : null);
-  if (!a.type && !a.country && !a.disambiguation) api('/api/artist-info/' + a.id).then(i => { if (artistCtx === a) line.textContent = who(i); }).catch(() => {});
+  artistCtx = a; artistTop = null; selected.clear(); drawActions(); results = [];
+  const alts = all.filter(x => x.id !== a.id).slice(0, 5), line = el('p', { class: 'sub' }, el('span', { text: who(a) }));
+  const bg = el('span', { class: 'abg' }), art = face({ name: a.name }, 'xl');
+  const selAll = el('button', { class: 'btn go', type: 'button', onclick: () => {
+    results.filter(r => typeOf(r) === 'Album' && !(r.owned && !r.owned.incomplete && !r.owned.picked)).forEach(r => selected.set(r.id, pick(r))); renderResults(); drawActions(); } }, pic('download', 'k'), 'Select all albums');
+  fill($('#artistBar'), el('header', { class: 'ahero' }, bg, art,
+    el('div', { class: 'acopy' }, el('small', { text: 'Artist' }), el('h1', { text: a.name }), line,
+      el('div', { class: 'dbtns' }, selAll, el('button', { class: 'btn ghost', type: 'button', text: 'Fans also like', onclick: () => $('#similar').scrollIntoView({ behavior: 'smooth', block: 'start' }) })))),
+    alts.length ? el('div', { class: 'alts' }, el('span', { text: 'Not them?' }), alts.map(x =>
+      el('button', { class: 'chip', type: 'button', text: x.name + (who(x) ? ' · ' + who(x) : ''), onclick: () => showArtist(x, all) })),
+      all.length > alts.length + 1 ? el('button', { class: 'chip on', type: 'button', text: `See all ${all.length}`, onclick: () => pickArtist(all, [], 'Artists with this name', `${all.length} matches, exact names first`) }) : null) : null);
+  if (!a.type && !a.country && !a.disambiguation) api('/api/artist-info/' + a.id).then(i => { if (artistCtx === a) line.firstChild.textContent = who(i); }).catch(() => {});
+  fill($('#artistTop'), el('section', { class: 'rail2 popular' }, el('div', { class: 'rhead' }, el('div', { class: 'rtitle' }, el('small', { text: 'Top songs' }), el('h3', { text: 'Popular' }))),
+    Array.from({ length: 5 }, () => el('div', { class: 'song sk' }, el('span', { class: 'n' }), el('span', { class: 'cover' }), el('span', { class: 'st2' }, el('b', { text: ' ' }))))));
   fill($('#results'), skeleton()); fill($('#similar'));
-  api(`/api/similar/${a.id}?name=${encodeURIComponent(a.name)}`).then(({ artists }) => {
-    if (artistCtx !== a || !artists.length) return;
-    fill($('#similar'), el('div', { class: 'alts' }, el('span', { text: 'Similar' }), artists.map(x => el('button', { class: 'chip sim' + (x.owned ? ' own' : ''), type: 'button', title: x.owned ? 'In your library' : '', onclick: () => openSimilar(x) }, avatar(x.name), x.name, x.owned ? pic('check', 'c') : null))));
-  }).catch(() => {});
+  fansAlsoLike(a, 'close', line);
+  api(`/api/artist-top/${a.id}?` + new URLSearchParams({ name: a.name })).then(d => {
+    if (artistCtx !== a) return;
+    artistTop = { a, d };
+    if (d.picture) { const im = el('img', { src: d.picture, alt: '', onload: () => { bg.style.backgroundImage = `url("${d.picture}")`; bg.classList.add('ok'); art.classList.add('gone'); } }); im.remove(); }
+    if (d.fans) line.firstChild.textContent = [line.firstChild.textContent, fans(d.fans)].filter(Boolean).join(' · ');
+    genreTags(line, d.genres); renderTopSongs();
+    if (results.length) renderResults();
+  }).catch(() => { if (artistCtx === a) fill($('#artistTop')); });
   try {
     const d = await api('/api/artist/' + a.id);
-    rows({ results: d.albums }, a.name);
+    if (artistCtx === a) rows({ results: d.albums }, a.name);
   } catch (e) { fill($('#results'), el('div', { class: 'msg err', text: e.message })); }
+}
+let topMore = false;
+const albumFor = s => results.find(r => !r.ytm && norm(r.title) === norm(s.album));
+function renderTopSongs() {
+  const d = artistTop && artistTop.d;
+  if (!d || !d.songs.length) return fill($('#artistTop'));
+  const top = Math.max(...d.songs.map(s => s.rank)) || 1, list = d.songs.slice(0, topMore ? 15 : 5);
+  fill($('#artistTop'), el('section', { class: 'rail2 popular' },
+    el('div', { class: 'rhead' }, el('div', { class: 'rtitle' }, el('small', { text: 'Top songs' }), el('h3', { text: 'Popular' }))),
+    el('div', { class: 'songs' }, list.map((s, i) => {
+      const get = el('button', { class: 'sget' + (s.have ? ' have' : ''), type: 'button', title: s.have ? 'In your folder' : `Download ${s.title} into ${s.album}`, 'aria-label': s.have ? s.title + ' is in your folder' : 'Download ' + s.title, disabled: s.have,
+        onclick: ev => { ev.stopPropagation(); const r = albumFor(s); getSongs({ id: r ? r.id : '', artist: r ? r.artist : s.artist, title: r ? r.title : s.album }, [{ title: s.title }], get); } }, pic(s.have ? 'check' : 'download', s.have ? 'k' : 'c'));
+      return el('div', { class: 'song', style: `--i:${i}`, role: 'button', tabindex: 0, title: `Open ${s.album}`,
+        onclick: () => { const r = albumFor(s); r ? openSongs(r, s.title) : toast(`${s.album} is not in this artist's MusicBrainz releases. Use the download button.`, 'error'); },
+        onkeydown: ev => { if (ev.key === 'Enter') ev.currentTarget.click(); } },
+        el('span', { class: 'n', text: i + 1 }), cover(s.cover),
+        el('span', { class: 'st2' }, el('b', {}, s.title, s.version ? el('em', { text: ' ' + s.version }) : null, s.explicit ? el('i', { class: 'ex', text: 'E' }) : null), el('small', { text: s.album + ([artistCtx.name, ...(d.names || [])].some(n => norm(n) === norm(s.artist)) ? '' : ' · ' + s.artist) })),
+        el('span', { class: 'pop', title: 'Popularity' }, el('i', { style: `--v:${Math.max(8, Math.round(100 * s.rank / top))}%` })),
+        el('span', { class: 'dur', text: mmss(s.seconds) }), get);
+    })),
+    d.songs.length > 5 ? el('button', { class: 'btn sm ghost more', type: 'button', text: topMore ? 'Show less' : 'See more', onclick: () => { topMore = !topMore; renderTopSongs(); } }) : null));
+}
+async function getSongs(g, tracks, btn) {
+  if (btn) { btn.disabled = true; fill(btn, el('span', { class: 'spin' })); }
+  try {
+    const r = await api('/api/songs', { groups: [{ ...g, tracks }] });
+    toast(r.songs === 1 ? `Queued ${tracks[0].title} → ${g.title}` : `Queued ${r.songs} songs from ${g.title}`, 'ok', { label: 'Queue', fn: () => show('queue') }); tick();
+    if (btn) { btn.classList.add('have'); fill(btn, pic('check', 'k')); }
+    return true;
+  } catch (e) { toast(e.message, 'error'); if (btn) { btn.disabled = false; fill(btn, pic('download', 'c')); } return false; }
+}
+async function openSongs(r, focus) {
+  const close = () => { bgEl.remove(); document.removeEventListener('keydown', esc); document.body.classList.remove('locked'); };
+  const esc = ev => { if (ev.key === 'Escape') close(); };
+  const body = el('div', { class: 'sbody' }, Array.from({ length: 8 }, () => el('div', { class: 'trk sk' }, el('span', {}), el('b', { text: ' ' }))));
+  const foot = el('div', { class: 'sfoot' });
+  const sub = el('p', { text: [r.artist, (r.date || '').slice(0, 4), typeOf(r)].filter(Boolean).join(' · ') });
+  const panel = el('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': r.title },
+    el('header', { class: 'shead' }, el('img', { class: 'dblur', src: coverUrl('', r.id, r.artist, r.title, 250), alt: '' }), el('span', { class: 'dart' }, cover(coverUrl('', r.id, r.artist, r.title, 500))),
+      el('div', { class: 'dcopy' }, el('small', { text: typeOf(r) }), el('h2', { text: r.title }), sub),
+      el('button', { class: 'sx', type: 'button', 'aria-label': 'Close', onclick: () => close() }, pic('x'))),
+    body, foot);
+  const bgEl = el('div', { class: 'sheet-bg', onclick: ev => { if (ev.target === bgEl) close(); } }, panel);
+  document.body.append(bgEl); document.body.classList.add('locked'); document.addEventListener('keydown', esc);
+  let d;
+  try {
+    if (!edCache.has(r.id)) edCache.set(r.id, api('/api/group/' + r.id).then(x => x.editions).catch(() => []));
+    const eds = await edCache.get(r.id);
+    if (!eds.length) throw new Error('MusicBrainz lists no release for this album');
+    d = await api('/api/release/' + eds[0].id);
+  } catch (e) { return fill(body, el('div', { class: 'msg err', text: e.message })); }
+  const want = new Set(focus ? d.tracks.filter(t => !t.have && norm(t.title).startsWith(norm(focus).slice(0, 12))).slice(0, 1).map(t => t.recording) : []);
+  const missing = d.tracks.filter(t => !t.have), have = d.tracks.length - missing.length;
+  sub.textContent = [d.artist, (d.original_date || d.date || '').slice(0, 4), d.tracks.length + ' songs', dur(d.total_seconds)].filter(Boolean).join(' · ');
+  const go = el('button', { class: 'btn go', type: 'button' }), whole = el('button', { class: 'btn ghost', type: 'button' });
+  const sync = () => {
+    go.disabled = !want.size; fill(go, pic('download', 'k'), want.size ? `Download ${want.size} ${want.size === 1 ? 'song' : 'songs'}` : 'Pick songs');
+    whole.disabled = !missing.length; whole.textContent = !missing.length ? 'Album complete' : have ? `Get the rest (${missing.length})` : 'Whole album';
+    boxes.forEach(([t, b, row]) => { b.checked = t.have || want.has(t.recording); row.classList.toggle('on', want.has(t.recording)); });
+  };
+  const multi = d.disc_total > 1, boxes = [];
+  fill(body, have ? el('p', { class: 'shave' }, pic('check', 'c'), `${have} of ${d.tracks.length} songs already in ${d.folder.split('/').slice(-2).join('/')}`) : null,
+    d.tracks.map(t => {
+      const b = el('input', { type: 'checkbox', disabled: t.have, 'aria-label': (t.have ? 'In your folder: ' : 'Pick ') + t.title });
+      const row = el('label', { class: 'trk' + (t.have ? ' have' : '') + (want.has(t.recording) ? ' on' : '') }, b,
+        el('span', { class: 'tn', text: (multi ? t.disc + '-' : '') + t.number }),
+        el('span', { class: 'tt' }, el('b', { text: t.title }), t.artist ? el('small', { text: t.artist }) : null),
+        t.have ? el('span', { class: 'tin' }, pic('check', 'c'), 'In folder') : null,
+        el('span', { class: 'dur', text: mmss(t.seconds) }));
+      b.onchange = () => { b.checked ? want.add(t.recording) : want.delete(t.recording); sync(); };
+      boxes.push([t, b, row]);
+      return row;
+    }));
+  const alln = el('button', { class: 'btn sm ghost', type: 'button', text: 'Pick all missing', onclick: () => { const on = missing.every(t => want.has(t.recording)); missing.forEach(t => on ? want.delete(t.recording) : want.add(t.recording)); sync(); } });
+  go.onclick = async () => {
+    const tracks = d.tracks.filter(t => want.has(t.recording)).map(t => ({ recording: t.recording, title: t.title }));
+    if (await getSongs({ id: r.id, artist: d.artist, title: d.title }, tracks)) close();
+  };
+  whole.onclick = async () => {
+    whole.disabled = true;
+    try {
+      const x = await api('/api/discography', { name: d.artist, groups: [{ id: r.id, title: r.title, artist: r.artist }], skip_owned: false });
+      toast(x.duplicates ? 'Already in the queue' : have ? `Adding the ${missing.length} missing songs of ${d.title}` : `Queued ${d.title}`, 'ok', { label: 'Queue', fn: () => show('queue') }); tick(); close();
+    } catch (e) { toast(e.message, 'error'); whole.disabled = false; }
+  };
+  fill(foot, missing.length ? alln : null, el('span', { class: 'acts' }, whole, go));
+  sync();
+  const first = boxes.find(([t]) => want.has(t.recording)); if (first) first[2].scrollIntoView({ block: 'center' });
+}
+function resultCard(r, i) {
+  const card = el('button', { class: 'card' + (selected.has(r.id) ? ' on' : ''), style: `--i:${Math.min(i, 16)}`, type: 'button', 'aria-pressed': selected.has(r.id), onclick: () => {
+    const on = !selected.has(r.id); on ? selected.set(r.id, pick(r)) : selected.delete(r.id);
+    document.querySelectorAll(`.card[data-id="${r.id}"]`).forEach(c => { c.classList.toggle('on', on); c.setAttribute('aria-pressed', on); }); drawActions(); } },
+    cover(r.ytm ? r.thumb : coverUrl('', r.id, r.artist, r.title, 250)), el('span', { class: 'tick' }, pic('check', 'c')),
+    r.owned ? el('span', { class: 'tag' + (r.owned.incomplete ? ' part' : r.owned.picked ? ' some' : ''), text: r.owned.incomplete ? 'Incomplete' : r.owned.picked ? `${r.owned.tracks} of ${r.owned.of} songs` : 'In folder' }) : null,
+    el('span', { class: 'meta' }, el('b', { text: r.title, title: r.title }),
+      el('small', { text: [artistCtx ? '' : r.artist, r.date.slice(0, 4), typeOf(r)].filter(Boolean).join(' · ') })));
+  card.dataset.id = r.id;
+  if (r.ytm) return card;
+  return el('div', { class: 'cw', style: `--i:${Math.min(i, 16)}` }, card,
+    el('span', { class: 'qacts' }, el('button', { class: 'qpill', type: 'button', title: 'See the songs on this album and pick which to download', 'aria-label': 'Songs on ' + r.title, onclick: () => openSongs(r) }, pic('list', 'k'), 'Songs')));
+}
+function popularReleases() {
+  if (!artistTop || artistTop.a !== artistCtx || !artistCtx || title !== artistCtx.name) return null;
+  const used = new Set(), list = artistTop.d.albums.map(x => results.find(r => !used.has(r.id) && norm(r.title) === norm(x.title) && used.add(r.id))).filter(Boolean).slice(0, 10);
+  return list.length >= 2 ? rail('Popular releases', 'Most loved', list.map(resultCard), { big: true }) : null;
 }
 function renderResults() {
   const kinds = ['All', ...new Set(results.map(typeOf))], shown = results.filter(r => filter === 'All' || typeOf(r) === filter);
   const allOn = shown.length && shown.every(r => selected.has(r.id));
-  fill($('#results'),
-    el('div', { class: 'bar' }, artistCtx && title === artistCtx.name ? avatar(title) : null, el('h2', { text: title }), el('span', { class: 'sub', text: shown.length + (shown.length === 1 ? ' release' : ' releases') }),
+  const artistPage = artistCtx && title === artistCtx.name;
+  fill($('#results'), popularReleases(),
+    el('div', { class: 'bar' }, el('h2', { text: artistPage ? 'Discography' : title }), el('span', { class: 'sub', text: shown.length + (shown.length === 1 ? ' release' : ' releases') }),
       el('button', { class: 'btn sm ghost', style: 'margin-left:auto', type: 'button', text: allOn ? 'Deselect all' : 'Select all', onclick: () => {
-        shown.forEach(r => allOn ? selected.delete(r.id) : (r.owned && !r.owned.incomplete) || selected.set(r.id, pick(r))); renderResults(); drawActions(); } })),
+        shown.forEach(r => allOn ? selected.delete(r.id) : (r.owned && !r.owned.incomplete && !r.owned.picked) || selected.set(r.id, pick(r))); renderResults(); drawActions(); } })),
     kinds.length > 2 ? el('div', { class: 'alts' }, kinds.map(k => el('button', { class: 'chip' + (k === filter ? ' on' : ''), type: 'button', text: k, onclick: () => { filter = k; renderResults(); } }))) : null,
-    el('div', { class: 'grid' + (fresh ? ' fresh' : '') }, shown.map((r, i) => {
-      const card = el('button', { class: 'card' + (selected.has(r.id) ? ' on' : ''), style: `--i:${Math.min(i, 16)}`, type: 'button', 'aria-pressed': selected.has(r.id), onclick: () => {
-        const on = !selected.has(r.id); on ? selected.set(r.id, pick(r)) : selected.delete(r.id);
-        card.classList.toggle('on', on); card.setAttribute('aria-pressed', on); drawActions(); } },
-        cover(r.ytm ? r.thumb : coverUrl('', r.id, r.artist, r.title, 250)), el('span', { class: 'tick' }, pic('check', 'c')),
-        r.owned ? el('span', { class: 'tag' + (r.owned.incomplete ? ' part' : ''), text: r.owned.incomplete ? 'Incomplete' : 'In folder' }) : null,
-        el('span', { class: 'meta' }, el('b', { text: r.title, title: r.title }),
-          el('small', { text: [artistCtx ? '' : r.artist, r.date.slice(0, 4), typeOf(r)].filter(Boolean).join(' · ') })));
-      return card;
-    })),
+    el('div', { class: 'grid' + (fresh ? ' fresh' : '') }, shown.map((r, i) => resultCard(r, i))),
     el('p', { class: 'foot' }, [results[0] && results[0].ytm ? el('span', { text: 'These come from YouTube Music, not MusicBrainz. Genre, label and date are filled in from Deezer when it has the album. ' }) : el('span', { text: 'Not here? ' }),
       results[0] && results[0].ytm ? null : el('button', { class: 'btn sm ghost', type: 'button', text: 'Search YouTube Music', onclick: () => searchYtm(lastQ) }), ' ',
       el('button', { class: 'btn sm ghost', type: 'button', text: 'Search YouTube uploads', onclick: () => searchUploads(lastQ) })]));
   fresh = false; drawActions();
 }
+// Discover: recommendations from the library, "more like this album", and "fans also like" on artist pages.
+let discData = null, discSeed = null, discShuffle = 0, discToken = 0;
+const artImg = x => x.deezer ? `https://api.deezer.com/artist/${x.deezer}/image?size=big` : '/api/artist-img?name=' + encodeURIComponent(x.name);
+const fans = n => !n ? '' : n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M fans' : n >= 1e3 ? Math.round(n / 1e3) + 'K fans' : n + ' fans';
+const both = names => names.length > 1 ? `${names[0]} & ${names[1]}` : names[0];
+function face(x, size = 'md') {
+  const h = [...x.name].reduce((t, c) => (t * 31 + c.codePointAt(0)) % 360, 7);
+  const box = el('span', { class: 'face ' + size, style: `--h:${h}` }, el('b', { text: (x.name.match(/[\p{L}\p{N}]/u) || ['?'])[0].toUpperCase() }));
+  const img = el('img', { alt: '', loading: 'lazy', src: artImg(x) });
+  img.onload = () => img.classList.add('ok'); img.onerror = () => img.remove(); box.append(img);
+  return box;
+}
+function bubble(x, i, note) {
+  return el('button', { class: 'bub' + (x.owned ? ' own' : ''), style: `--i:${Math.min(i, 14)}`, type: 'button', title: x.owned ? x.name + ' · in your library' : x.name, onclick: () => { show('search'); openSimilar(x); } },
+    face(x), x.match ? el('span', { class: 'match', text: x.match + '%' }) : null, x.owned ? el('span', { class: 'own' }, pic('check', 'k')) : null,
+    el('b', { text: x.name }), el('small', { text: note || fans(x.fans) }));
+}
+function albumCard(a, i, big) {
+  const dl = el('button', { class: 'qbtn dl', type: 'button', title: 'Download', 'aria-label': 'Download ' + a.title, onclick: () => quickGet(a, dl) }, pic('download', 'k'));
+  return el('div', { class: 'dcard' + (big ? ' big' : ''), style: `--i:${Math.min(i, 14)}` },
+    el('button', { class: 'dhit', type: 'button', title: `${a.title} by ${a.artist}`, onclick: () => openAlbum(a) },
+      cover(a.cover),
+      el('span', { class: 'meta' }, el('b', { text: a.title }), el('small', { text: [a.artist, a.year || ''].filter(Boolean).join(' · ') }),
+        a.because && a.because.length ? el('em', { text: 'Fans of ' + both(a.because) }) : null)),
+    el('span', { class: 'qacts' }, el('button', { class: 'qbtn', type: 'button', title: 'More like this', 'aria-label': 'More like ' + a.title, onclick: () => likeAlbum(a) }, pic('star', 'k')), dl),
+    a.type === 'EP' ? el('span', { class: 'tag ep', text: 'EP' }) : null);
+}
+// Rails scroll sideways with a trackpad, Shift+wheel, the arrow buttons, the keyboard, or by dragging with a mouse.
+function dragScroll(track) {
+  let id = null, x0 = 0, s0 = 0, moved = false;
+  track.addEventListener('pointerdown', ev => { if (ev.pointerType !== 'mouse' || ev.button !== 0 || track.classList.contains('all')) return; id = ev.pointerId; x0 = ev.clientX; s0 = track.scrollLeft; moved = false; });
+  track.addEventListener('pointermove', ev => {
+    if (ev.pointerId !== id) return;
+    const dx = ev.clientX - x0;
+    if (!moved && Math.abs(dx) > 6) { moved = true; track.setPointerCapture(id); track.classList.add('dragging'); }
+    if (moved) track.scrollLeft = s0 - dx;
+  });
+  const end = () => { if (id == null) return; id = null; track.classList.remove('dragging'); };
+  track.addEventListener('pointerup', end); track.addEventListener('pointercancel', end);
+  track.addEventListener('click', ev => { if (moved) { ev.preventDefault(); ev.stopPropagation(); moved = false; } }, true);
+  track.addEventListener('dragstart', ev => ev.preventDefault());
+}
+function railTools(track, count) {
+  track.tabIndex = 0; dragScroll(track);
+  const step = d => track.scrollBy({ left: d * track.clientWidth * 0.85, behavior: 'smooth' });
+  const left = el('button', { class: 'rarrow', type: 'button', 'aria-label': 'Scroll left', onclick: () => step(-1) }, '‹');
+  const right = el('button', { class: 'rarrow', type: 'button', 'aria-label': 'Scroll right', onclick: () => step(1) }, '›');
+  const nav = el('span', { class: 'rnav' }, left, right);
+  const ends = () => { left.disabled = track.scrollLeft < 4; right.disabled = track.scrollLeft + track.clientWidth >= track.scrollWidth - 4; nav.hidden = track.classList.contains('all') || (left.disabled && right.disabled); };
+  track.addEventListener('scroll', ends, { passive: true }); requestAnimationFrame(ends); addEventListener('resize', ends);
+  const all = count > 4 ? el('button', { class: 'btn sm ghost seeall', type: 'button', text: 'See all', onclick: () => {
+    const on = track.classList.toggle('all'); all.textContent = on ? 'Show less' : 'See all'; track.scrollLeft = 0; ends();
+    if (!on) track.closest('section').scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } }) : null;
+  return el('span', { class: 'rtools' }, nav, all);
+}
+function rail(head, sub, items, opts = {}) {
+  if (!items.length) return null;
+  const track = el('div', { class: 'rtrack' + (opts.big ? ' big' : '') + (opts.round ? ' round' : '') }, items);
+  return el('section', { class: 'rail2' },
+    el('div', { class: 'rhead' }, opts.lead || null, el('div', { class: 'rtitle' }, sub ? el('small', { text: sub }) : null, el('h3', { text: head })), railTools(track, items.length)),
+    track);
+}
+const railSk = (n = 6, round) => el('section', { class: 'rail2 sk-rail' }, el('div', { class: 'rhead' }, el('div', { class: 'rtitle' }, el('small', { text: ' ' }), el('h3', { text: ' ' }))),
+  el('div', { class: 'rtrack' + (round ? ' round' : '') }, Array.from({ length: n }, () => round ? el('span', { class: 'bub sk' }, el('span', { class: 'face md' }), el('b', { text: ' ' })) : el('div', { class: 'dcard sk' }, el('span', { class: 'cover' }), el('span', { class: 'meta' }, el('b', { text: ' ' }), el('small', { text: ' ' }))))));
+
+// The music map: every library artist placed by genre, with genre families as coloured blobs that blend where they meet.
+// A circle (the lens) picks the part of the library that Discover works from.
+let discMap = null, discArea = null, lens = store.get('lens', null), lensOn = store.get('lensOn', true);
+const MW = 1000, MH = 700, SVGNS = 'http://www.w3.org/2000/svg';
+const svgEl = (tag, attrs, ...kids) => { const e = document.createElementNS(SVGNS, tag); for (const [k, v] of Object.entries(attrs || {})) if (v != null) e.setAttribute(k, v); e.append(...kids.flat().filter(x => x != null)); return e; };
+const hsl = (h, l, a, sat = 85) => `hsla(${h} ${sat}% ${l}% / ${a})`;
+const famHue = k => k === 'unknown' ? 205 : ((discMap.anchors.find(a => a.key === k) || {}).hue ?? 205);
+const famSat = k => k === 'unknown' ? 12 : 85;
+const inLens = a => lens && Math.hypot((a.x - lens.x) * MW, (a.y - lens.y) * MH) <= lens.r * MW;
+function areaName(area) {
+  if (!area) return 'your whole library';
+  const c = {}; area.forEach(a => { c[a.family] = (c[a.family] || 0) + 1; });
+  const top = Object.entries(c).sort((x, y) => y[1] - x[1]).map(([k]) => (discMap.families.find(f => f.key === k) || {}).label).filter(Boolean);
+  return top.slice(0, 2).join(' & ') + (top.length > 2 ? ` +${top.length - 2}` : '');
+}
+function buildDiscover() {
+  fill($('#disc'), el('div', { id: 'dhero' }, discHero(null)),
+    el('section', { id: 'dmap', class: 'mapbox' }, el('div', { class: 'mapsk' }, el('span', { class: 'spin' }), 'Charting your library…')),
+    el('div', { id: 'dfeed' }));
+}
+async function loadDiscover(shuffle) {
+  discSeed = null;
+  if (shuffle) discShuffle = 1 + Math.floor(Math.random() * 1e6);
+  if (!$('#dmap')) buildDiscover();
+  if (!discMap) { await loadMap(0); if (!discMap) return; } else if (!$('#dmap svg')) drawMap();
+  if (!discMap.artists.length) return;
+  loadFeed();
+}
+async function loadMap(round) {
+  let m;
+  try { m = await api('/api/discover/map'); } catch (e) { return fill($('#dmap'), el('div', { class: 'msg err', text: e.message })); }
+  const first = !discMap; discMap = m;
+  if (!m.artists.length) return fill($('#disc'), discHero(null), el('div', { class: 'dempty' }, el('span', { class: 'pi star c' }), el('b', { text: 'Nothing to go on yet' }),
+    el('p', { text: 'Download a few albums you love, and this page maps them by genre and finds more like them.' }), el('button', { class: 'btn go', type: 'button', text: 'Search for music', onclick: () => { show('search'); $('#q').focus(); } })));
+  if (first && !lens) { const f = m.families.find(f => f.key !== 'unknown') || m.families[0]; lens = fitFamily(f); }
+  if ($('#dmap')) drawMap();
+  if (m.pending && round < 4) setTimeout(() => { if (discMap === m) loadMap(round + 1); }, 6000);
+}
+function fitFamily(f) {
+  const own = discMap.artists.filter(a => a.family === f.key);
+  const d = own.map(a => Math.hypot((a.x - f.x) * MW, (a.y - f.y) * MH) / MW).sort((x, y) => x - y);
+  const core = d.length ? d[Math.min(d.length - 1, Math.floor(d.length * 0.7))] : 0;
+  return { x: f.x, y: f.y, r: Math.min(0.2, Math.max(0.06, core + 0.03)) };
+}
+function drawMap() {
+  const m = discMap, box = $('#dmap');
+  const keys = [...new Set(m.artists.map(a => a.family))];
+  const defs = svgEl('defs', {}, keys.map(k => svgEl('radialGradient', { id: 'g-' + k },
+    svgEl('stop', { offset: '0', 'stop-color': hsl(famHue(k), 62, .85, famSat(k)) }), svgEl('stop', { offset: '.5', 'stop-color': hsl(famHue(k), 55, .32, famSat(k)) }),
+    svgEl('stop', { offset: '1', 'stop-color': hsl(famHue(k), 50, 0, famSat(k)) }))),
+    svgEl('filter', { id: 'soft', x: '-20%', y: '-20%', width: '140%', height: '140%' }, svgEl('feGaussianBlur', { stdDeviation: '14' })));
+  const used = new Set(keys);
+  const guide = svgEl('g', { class: 'mguide' }, svgEl('ellipse', { cx: MW / 2, cy: MH / 2, rx: MW * 0.37, ry: MH * 0.37 }),
+    m.anchors.filter(a => !used.has(a.key)).map(a => svgEl('text', { x: a.x * MW, y: a.y * MH, class: 'mghost' }, a.label)));
+  const blobs = svgEl('g', { class: 'mblobs', filter: 'url(#soft)' },
+    m.families.map(f => svgEl('circle', { cx: f.x * MW, cy: f.y * MH, r: 60 + 42 * Math.sqrt(f.artists), fill: `url(#g-${f.key})`, opacity: .9 })),
+    m.artists.slice(0, 400).map(a => svgEl('circle', { cx: a.x * MW, cy: a.y * MH, r: 44 + 8 * Math.sqrt(a.albums), fill: `url(#g-${a.family})`, opacity: .6 })));
+  // Labels: genre families first (nudged up or down until they don't overlap), then genre tags and artist names wherever they still fit.
+  const boxes = [], hits = b => boxes.some(o => b.x1 < o.x2 && b.x2 > o.x1 && b.y1 < o.y2 && b.y2 > o.y1);
+  const place = (text, x, y, size, tries) => {
+    const w = text.length * size * 0.62, h = size * 1.1, cx = Math.min(MW - w / 2 - 10, Math.max(w / 2 + 10, x));
+    for (const dy of tries) {
+      const cy = Math.min(MH - 14, Math.max(size + 6, y + dy)), b = { x1: cx - w / 2, x2: cx + w / 2, y1: cy - h * .8, y2: cy + h * .25 };
+      if (!hits(b)) { boxes.push(b); return { x: cx, y: cy }; }
+    }
+    return null;
+  };
+  const fs = box.clientWidth && box.clientWidth < 600 ? 40 : 25, step = fs * 1.2;
+  const famAt = m.families.map(f => [f, place(f.label.toUpperCase(), f.x * MW, f.y * MH + 8, fs, [0, -step, step, -2 * step, 2 * step, -3 * step, 3 * step])]);
+  const tags = svgEl('g', { class: 'mtags' }, m.tags.map(t => { const p = place(t.name, t.x * MW, t.y * MH + 30, 16, [0, 18, -18]); return p && svgEl('text', { x: p.x, y: p.y }, t.name); }));
+  const dots = m.artists.map(a => svgEl('circle', { class: 'mdot', cx: a.x * MW, cy: a.y * MH, r: 4.5 + 2 * Math.sqrt(a.albums), fill: hsl(famHue(a.family), 78, 1, famSat(a.family)) },
+    svgEl('title', {}, `${a.name} · ${a.albums} ${a.albums === 1 ? 'album' : 'albums'}${a.genres.length ? ' · ' + a.genres.slice(0, 3).join(', ') : ''}`)));
+  const names = svgEl('g', { class: 'mnames' }, m.artists.slice(0, 24).map(a => { const p = place(a.name, a.x * MW, a.y * MH - 12 - 2 * Math.sqrt(a.albums), 14, [0, 34]); return p && svgEl('text', { x: p.x, y: p.y }, a.name); }));
+  const labels = svgEl('g', { class: 'mlabels' }, famAt.map(([f, p]) => p && svgEl('text', { x: p.x, y: p.y, style: `font-size:${fs}px` }, f.label)));
+  const ring = svgEl('circle', { class: 'lring' }), hub = svgEl('circle', { class: 'lhub', r: 7 });
+  const lensG = svgEl('g', { class: 'mlens' }, ring, hub);
+  const svg = svgEl('svg', { viewBox: `0 0 ${MW} ${MH}`, class: 'mapsvg', role: 'img', 'aria-label': 'Map of your library by genre. Click or drag to choose an area.' },
+    defs, guide, blobs, tags, svgEl('g', { class: 'mdots' }, dots), names, labels, lensG);
+  const n = el('b'), meta = el('small'), faces = el('span', { class: 'afaces' });
+  const focus = el('input', { type: 'range', min: 5, max: 45, value: Math.round((lens ? lens.r : 0.16) * 100), 'aria-label': 'Area size' });
+  const whole = el('button', { class: 'chip' + (lensOn ? '' : ' on'), type: 'button', text: 'Whole library' });
+  const chips = el('div', { class: 'alts mchips' }, whole, m.families.map(f => el('button', { class: 'chip fam', type: 'button', style: `--h:${famHue(f.key)};--s:${famSat(f.key)}%`, onclick: () => { lens = fitFamily(f); lensOn = true; focus.value = Math.round(lens.r * 100); paint(); commit(); } },
+    el('i'), `${f.label} · ${f.artists}`)));
+  const paint = () => {
+    const on = lensOn && lens;
+    lensG.style.display = on ? '' : 'none'; svg.classList.toggle('lensing', !!on); whole.classList.toggle('on', !on);
+    if (on) { ring.setAttribute('cx', lens.x * MW); ring.setAttribute('cy', lens.y * MH); ring.setAttribute('r', lens.r * MW); hub.setAttribute('cx', lens.x * MW); hub.setAttribute('cy', lens.y * MH); }
+    const area = on ? m.artists.filter(inLens) : m.artists;
+    dots.forEach((d, i) => d.classList.toggle('in', !!on && inLens(m.artists[i])));
+    n.textContent = on ? (area.length ? areaName(area) : 'Empty space') : 'Your whole library';
+    meta.textContent = on && !area.length ? 'Drag the circle onto some dots' : `${area.length} ${area.length === 1 ? 'artist' : 'artists'} · ${area.reduce((t, a) => t + a.albums, 0)} albums` +
+      (on ? ' · ' + [...new Set(area.flatMap(a => a.genres.slice(0, 2)))].slice(0, 4).join(', ') : '');
+    fill(faces, area.slice(0, 6).map(a => face({ name: a.name }, 'sm')));
+  };
+  const commit = () => { store.set('lens', lens); store.set('lensOn', lensOn); loadFeed(); };
+  const toUnit = ev => { const r = svg.getBoundingClientRect(); return { x: Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)), y: Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height)) }; };
+  let drag = false, from = null;
+  svg.addEventListener('pointerdown', ev => {
+    if (ev.button !== 0) return;
+    const p = toUnit(ev); from = lens && lensOn ? { dx: p.x - lens.x, dy: p.y - lens.y, inside: Math.hypot((p.x - lens.x) * MW, (p.y - lens.y) * MH) <= lens.r * MW } : null;
+    if (!(from && from.inside)) { lens = { r: lens ? lens.r : 0.16, x: p.x, y: p.y }; from = { dx: 0, dy: 0 }; }
+    lensOn = true; paint();
+    if (ev.pointerType === 'touch') return commit();
+    drag = true; svg.setPointerCapture(ev.pointerId); svg.classList.add('grabbing');
+  });
+  svg.addEventListener('pointermove', ev => { if (!drag) return; const p = toUnit(ev); lens.x = p.x - from.dx; lens.y = p.y - from.dy; paint(); });
+  const done = () => { if (!drag) return; drag = false; svg.classList.remove('grabbing'); commit(); };
+  svg.addEventListener('pointerup', done); svg.addEventListener('pointercancel', done);
+  focus.oninput = () => { if (!lens) lens = { x: .5, y: .5, r: .16 }; lens.r = focus.value / 100; lensOn = true; paint(); };
+  focus.onchange = commit;
+  whole.onclick = () => { lensOn = false; paint(); commit(); };
+  fill(box, el('div', { class: 'mhead' }, el('div', { class: 'rtitle' }, el('small', { text: 'Your music map' }), el('h3', { text: 'Pick an area to explore' })),
+      m.pending ? el('span', { class: 'mpend' }, el('span', { class: 'spin' }), `Placing ${m.pending} more`) : null),
+    el('div', { class: 'mapwrap' }, svg, el('span', { class: 'mhint', text: 'Click or drag the circle' })),
+    el('div', { class: 'areabar' }, faces, el('span', { class: 'atext' }, n, meta), el('label', { class: 'focus' }, el('small', { text: 'Narrow' }), focus, el('small', { text: 'Wide' }))),
+    chips);
+  paint();
+}
+async function loadFeed() {
+  const tok = ++discToken;
+  discArea = lensOn && lens && discMap ? discMap.artists.filter(inLens) : null;
+  if (discArea && !discArea.length) { fill($('#dhero'), discHero(null)); return fill($('#dfeed'), el('div', { class: 'msg', text: 'No artists inside the circle. Drag it onto some dots, or pick a genre below the map.' })); }
+  fill($('#dhero'), discHero(null)); fill($('#dfeed'), railSk(6), railSk(7, true), railSk(6));
+  try {
+    const d = discArea ? await api('/api/discover/feed', { shuffle: discShuffle, artists: discArea.map(a => a.name) }) : await api('/api/discover/feed?shuffle=' + discShuffle);
+    if (tok !== discToken) return;
+    discData = d; renderDiscover();
+  } catch (e) { if (tok === discToken) fill($('#dfeed'), el('div', { class: 'msg err', text: e.message })); }
+}
+function discHero(d) {
+  const shuffle = el('button', { class: 'btn sm ghost', type: 'button', onclick: () => loadDiscover(true) }, pic('retry'), 'Shuffle');
+  const covers = d ? d.picks.slice(0, 5).map(a => a.cover) : [];
+  const where = discMap ? areaName(discArea) : 'your library';
+  return el('header', { class: 'dhero' },
+    el('div', { class: 'dstack' }, covers.map((c, i) => el('img', { src: c, alt: '', style: `--k:${i}`, onload: ev => ev.target.classList.add('ok') }))),
+    el('div', { class: 'dcopy' }, el('small', { text: discArea ? 'Exploring' : 'Made for you' }), el('h2', { text: discArea ? where : 'Discover' }),
+      el('p', { text: d && d.seeds.length ? `Built from ${d.seeds.slice(0, 3).join(', ')}${d.seeds.length > 3 ? ` and ${d.seeds.length - 3} more` : ''}${discArea ? ' in this part of your library' : ' in your library'}.` : discArea ? 'Finding albums and artists near this part of your library…' : 'Albums and artists picked from what you already have.' }),
+      el('div', { class: 'dbtns' }, shuffle)));
+}
+function renderDiscover() {
+  const d = discData;
+  if (!$('#dfeed')) { buildDiscover(); if (discMap) drawMap(); }
+  fill($('#dhero'), discHero(d));
+  if (!d.seeds.length) return fill($('#dfeed'), el('div', { class: 'msg', text: 'Nothing to recommend from here yet.' }));
+  fill($('#dfeed'),
+    rail('Picked for you', discArea ? 'Fresh albums from ' + areaName(discArea) : 'Fresh albums', d.picks.map((a, i) => albumCard(a, i, true)), { big: true }),
+    d.rails.map(r => rail(r.seed, 'Because you have', r.albums.map(albumCard), { lead: face({ name: r.seed }, 'sm') })),
+    rail('Artists you might like', 'Your next favourites', d.artists.map((x, i) => bubble(x, i, x.because ? 'Like ' + both(x.because) : '')), { round: true }),
+    rail('Under the radar', 'Deeper cuts', d.radar.map((x, i) => bubble(x, i)), { round: true, lead: el('span', { class: 'rbadge' }, pic('bolt', 'k')) }),
+    rail('Missing from your shelf', 'More from artists you have', d.gaps.map(albumCard)),
+    el('p', { class: 'foot', text: 'Recommendations come from Deezer, ListenBrainz and Last.fm listening data. The map uses the genres in your files.' }));
+}
+async function likeAlbum(a) {
+  discSeed = { artist: a.artist, title: a.title, cover: a.cover }; const tok = ++discToken;
+  show('discover');
+  const back = el('button', { class: 'btn sm ghost', type: 'button', text: '‹ Discover', onclick: () => { discSeed = null; buildDiscover(); if (discMap) drawMap(); discData ? renderDiscover() : loadDiscover(); } });
+  const hero = s => el('header', { class: 'dhero seed' }, s.cover ? el('img', { class: 'dblur', src: s.cover, alt: '' }) : null,
+    el('span', { class: 'dart' }, s.cover ? el('img', { src: s.cover, alt: '', onload: ev => ev.target.classList.add('ok') }) : null),
+    el('div', { class: 'dcopy' }, el('small', { text: 'More like' }), el('h2', { text: s.title }),
+      el('p', { text: [s.artist, s.year || '', (s.genres || []).join(', '), s.label].filter(Boolean).join(' · ') }), el('div', { class: 'dbtns' }, back)));
+  fill($('#disc'), hero(discSeed), el('div', { class: 'grid dgrid' }, Array.from({ length: 12 }, () => el('div', { class: 'dcard sk' }, el('span', { class: 'cover' }), el('span', { class: 'meta' }, el('b', { text: ' ' }), el('small', { text: ' ' }))))));
+  try {
+    const d = await api('/api/discover/album?' + new URLSearchParams({ artist: a.artist, album: a.title }));
+    if (tok !== discToken) return;
+    const s = Object.assign({}, discSeed, d.seed, { cover: d.seed.cover || discSeed.cover });
+    fill($('#disc'), hero(s),
+      d.albums.length ? el('div', { class: 'grid dgrid fresh' }, d.albums.map(albumCard)) : el('div', { class: 'msg', text: `No recommendations for ${a.title} yet. Deezer may not know this album.` }),
+      rail('Artists in the same orbit', 'Fans also like', d.artists.map((x, i) => bubble(x, i, x.because && x.because.length > 1 ? 'Like ' + both(x.because) : '')), { round: true }));
+  } catch (e) { if (tok === discToken) fill($('#disc'), hero(discSeed), el('div', { class: 'msg err', text: e.message })); }
+}
+function openAlbum(a) {
+  show('search'); const q = `${a.artist} - ${a.title}`; $('#q').value = q; lastQ = q.replace(/\s+[-–—]\s+/g, ' ');
+  selected.clear(); artistCtx = null; drawActions(); fill($('#artistBar')); fill($('#artistTop')); fill($('#similar')); fill($('#results'), skeleton());
+  search(q).catch(e => fill($('#results'), el('div', { class: 'msg err', text: e.message })));
+}
+async function quickGet(a, btn) {
+  btn.disabled = true; fill(btn, el('span', { class: 'spin' }));
+  try {
+    const { results: rs } = await api('/api/search?' + new URLSearchParams({ artist: a.artist, album: a.title }));
+    const t = norm(a.title), same = r => norm(r.title) === t, near = r => norm(r.title).startsWith(t) || t.startsWith(norm(r.title));
+    const best = rs.find(r => same(r) && !r.secondary.length) || rs.find(same) || rs.find(r => near(r) && !r.secondary.length);
+    if (!best) { toast(`${a.title} isn't on MusicBrainz under that name`, 'error', { label: 'Search', fn: () => openAlbum(a) }); fill(btn, pic('download', 'k')); btn.disabled = false; return; }
+    const r = await api('/api/discography', { name: best.artist, groups: [pick(best)], skip_owned: false });
+    toast(r.duplicates ? 'Already in the queue' : `Queued ${best.title}`, 'ok', { label: 'Queue', fn: () => show('queue') }); tick();
+    btn.classList.add('done'); fill(btn, pic('check', 'k'));
+  } catch (e) { toast(e.message, 'error'); fill(btn, pic('download', 'k')); btn.disabled = false; }
+}
+function fansAlsoLike(a, mode, line) {
+  const tok = artistCtx;
+  const seg = el('div', { class: 'seg' }, [['close', 'Closest'], ['deep', 'Deeper cuts']].map(([m, t]) =>
+    el('button', { class: m === mode ? 'on' : '', type: 'button', text: t, onclick: () => m !== mode && fansAlsoLike(a, m, line) })));
+  const head = el('div', { class: 'rhead' }, el('div', { class: 'rtitle' }, el('small', { text: mode === 'deep' ? 'Less known, same orbit' : 'Fans also like' }), el('h3', { text: mode === 'deep' ? 'Deeper cuts' : 'Similar artists' })), seg);
+  fill($('#similar'), el('section', { class: 'rail2 simbox' }, head, el('div', { class: 'rtrack round' }, Array.from({ length: 7 }, () => el('span', { class: 'bub sk' }, el('span', { class: 'face md' }), el('b', { text: ' ' }))))));
+  api(`/api/similar/${a.id}?` + new URLSearchParams({ name: a.name, mode })).then(({ artists, genres }) => {
+    if (artistCtx !== tok) return;
+    if (genres && genres.length && line && !line.dataset.g) { line.dataset.g = 1; line.append(el('span', { class: 'genres' }, genres.map(g => el('i', { text: g })))); }
+    if (!artists.length) return fill($('#similar'), mode === 'deep' ? el('section', { class: 'rail2 simbox' }, head, el('p', { class: 'sub', text: 'No deeper cuts found for this artist.' })) : null);
+    const track = el('div', { class: 'rtrack round' }, artists.map((x, i) => bubble(x, i, x.via ? 'Via ' + both(x.via) : x.owned ? 'In your library' : fans(x.fans))));
+    head.append(railTools(track, artists.length));
+    fill($('#similar'), el('section', { class: 'rail2 simbox' }, head, track));
+  }).catch(() => { if (artistCtx === tok) fill($('#similar')); });
+}
+$('#likeBtn').addEventListener('click', () => {
+  const one = view === 'library' ? [...libSel.values()][0] : [...selected.values()][0];
+  if (one) likeAlbum({ artist: one.artist, title: one.title, cover: view === 'library' ? '/api/library/art?' + new URLSearchParams({ artist: one.artist, album: one.title }) : coverUrl('', one.id, one.artist, one.title, 500) });
+});
 const libSel = new Map(), lkey = a => a.artist + '\u0000' + a.title;
 const edCache = new Map();
 const edKey = e => [e.title, e.tracks, e.disambiguation, (e.date || '').slice(0, 4)].join('|').toLowerCase();
@@ -228,12 +614,14 @@ async function drawEditions() {
   $('#edSel').onchange = ev => { one.release = ev.target.value || undefined; };
   row.hidden = false; $('#actions').classList.add('tall');
 }
+let full = false;
 function drawActions() {
   const lib_ = view === 'library', n = lib_ ? libSel.size : selected.size;
   $('#actions').hidden = !n || (view !== 'search' && !lib_);
   drawEditions();
   $('#editBtn').hidden = !(lib_ && n === 1);
   $('#expBtn').hidden = !lib_;
+  $('#likeBtn').hidden = !(n === 1 && (lib_ || ![...selected.values()][0].ytm));
   $('#linkBtn').hidden = !(lib_ && n === 1 && [...libSel.values()][0].missing.length);
   $('#dlBtn').hidden = lib_; $('#retryBtn').hidden = !(lib_ && [...libSel.values()].some(a => a.incomplete));
   if (lib_) {
@@ -241,8 +629,9 @@ function drawActions() {
     $('#delBtn').hidden = false; return;
   }
   const have = [...selected.keys()].filter(id => (results.find(r => r.id === id) || {}).owned).length, own = n && have === n;
+  full = own && [...selected.keys()].every(id => { const o = (results.find(r => r.id === id) || {}).owned; return o && !o.incomplete && !o.picked; });
   $('#actionText').textContent = (n === 1 ? '1 album' : n + ' albums') + (have && !own ? ` · ${have} in folder` : '');
-  $('#dlLabel').textContent = own ? 'Download again' : 'Download';
+  $('#dlLabel').textContent = full ? 'Download again' : have ? 'Add missing songs' : 'Download';
   $('#delBtn').hidden = !own; if (!own) resetDelete();
 }
 $('#clearSel').addEventListener('click', () => { if (view === 'library') { libSel.clear(); renderLibrary(); } else { selected.clear(); if (results.length) renderResults(); } drawActions(); });
@@ -275,7 +664,7 @@ $('#dlBtn').addEventListener('click', async () => {
   try {
     const r = groups[0].ytm
       ? await api('/api/ytm/download', { albums: groups.map(g => g.id) }).then(d => ({ duplicates: d.duplicates }))
-      : await api('/api/discography', { name: artistCtx ? artistCtx.name : groups[0].artist, groups, skip_owned: false });
+      : await api('/api/discography', { name: artistCtx ? artistCtx.name : groups[0].artist, groups, skip_owned: false, replace: full });
     const added = groups.length - r.duplicates;
     toast(!added ? 'Already in the queue' : (groups.length === 1 ? `Queued ${groups[0].title}` : `Queued ${added} albums`) + (r.duplicates && added ? `, ${r.duplicates} already queued` : ''), 'ok', { label: 'Queue', fn: () => show('queue') });
     selected.clear(); drawActions(); renderResults(); tick();
@@ -304,6 +693,7 @@ function renderLibrary() {
       a.cover ? cover('/api/library/art?' + new URLSearchParams({ artist: a.artist, album: a.title })) : el('span', { class: 'cover' }),
       el('span', { class: 'jtext' }, el('b', { text: a.title, title: a.title }),
         el('small', { text: [libMode === 'All' ? '' : a.artist, a.tracks + (a.tracks === 1 ? ' track' : ' tracks'), bytes(a.size), a.mtime ? ago(a.mtime) : ''].filter(Boolean).join(' · ') }),
+        a.picked ? el('span', { class: 'st run', text: `${a.tracks} of ${a.of} songs · open the album in Search to get the rest` }) : null,
         a.incomplete ? el('span', { class: 'st part', text: a.missing.length ? `Missing ${a.missing.length}: ${a.missing.join(', ')}` : 'Incomplete' }) : null,
         a.gaps.length ? el('span', { class: 'st part', text: 'Data incomplete: no ' + a.gaps.join(', no ') }) : null,
         !a.cover ? el('span', { class: 'st wait', text: 'No cover' }) : null,
