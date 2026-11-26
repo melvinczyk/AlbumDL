@@ -29,7 +29,11 @@ button { cursor: pointer; }
 
 header.top { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: max(14px, env(safe-area-inset-top, 0px)) 0 12px; }
 .brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.brand img { display: block; height: 30px; image-rendering: pixelated; }
+.brand .t, .brand .l { display: block; flex: none; image-rendering: pixelated; }
+.brand .t { width: 32px; height: 32px; background: url(/static/img/disc.png) 0 0 / 768px 32px; animation: disc 1.8s steps(24) infinite; }
+.brand .l { width: 121px; height: 29px; background: url(/static/img/logo.png) 0 0 / 5808px 29px; animation: logo 3.6s steps(48) infinite; }
+@keyframes disc { to { background-position-x: -768px; } }
+@keyframes logo { to { background-position-x: -5808px; } }
 .pill { display: inline-flex; align-items: center; gap: 9px; max-width: 62%; min-height: 36px; padding: 0 14px; font: 700 13px var(--sans); background: var(--p); border: 2px solid var(--line); border-radius: 999px; }
 .pill span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pill:hover { border-color: var(--c1); }
