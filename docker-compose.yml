@@ -1,5 +1,6 @@
 services:
   albumdl:
+    container_name: albumdl
     build: .
     restart: unless-stopped
     user: "${PUID:-1000}:${PGID:-1000}"
